@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Serif+TC:wght@700;900&display=swap">
-  <link rel="stylesheet" href="assets/style.css?v=18">
+  <link rel="stylesheet" href="assets/style.css?v=19">
 </head>
 <body>
   <main class="display">
@@ -91,10 +91,10 @@
     }
 
     /* 依可用空間算出最佳欄數與字級，讓卡片填滿整個螢幕 */
-    var MIN_U = 12, MAX_U = 60;
-    function applyFit(cols, rowH, u) {
+    var MIN_U = 12, MAX_U = 52;
+    function applyFit(cols, rowH, u, colW) {
       var s = gridEl.style;
-      s.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+      s.gridTemplateColumns = colW ? 'repeat(' + cols + ', ' + Math.floor(colW) + 'px)' : 'repeat(' + cols + ', minmax(0, 1fr))';
       s.gridAutoRows = rowH ? rowH + 'px' : 'auto';
       s.setProperty('--word-size', u + 'px');
       s.setProperty('--no-size', Math.max(12, u * .72) + 'px');
@@ -125,22 +125,42 @@
       });
       var L = Math.max(3, Math.min(8, longest)) + 2.6; // + 左右留白與 ✦ 符號
 
+      // 單張卡片的尺寸上限：份數少時不要撐滿整個畫面
+      var maxW = Math.min(560, Math.max(320, W * .34));
+      var maxH = Math.min(420, Math.max(240, H * .45));
+
       // 每種欄數算出列高與字級上限
       var cands = [];
       for (var cols = 1; cols <= Math.min(n, 60); cols++) {
         var rows = Math.ceil(n / cols);
-        var w = (W - gap * (cols - 1)) / cols;
-        // 最後一列空出的位置不夠放 QR code 時，底部留出 QR 的高度
-        var emptyW = (rows * cols - n) * (w + gap);
-        var availH = emptyW >= qrW ? H : H - qrH;
-        var h = Math.floor((availH - gap * (rows - 1)) / rows);
-        var ub = Math.min(MAX_U, (h - 30) / k, w / L);
-        if (ub >= MIN_U) cands.push({ cols: cols, h: h, ub: ub });
+        var fullW = Math.min(maxW, (W - gap * (cols - 1)) / cols);
+        // 避開右下角 QR code 的兩種方式：
+        //   ① 卡片照常寬，最後一列右邊不夠空時，底部讓出 QR 的高度（卡片變矮）
+        //   ② 卡片變窄，讓整組左右兩側都留出 QR 的寬度（高度不受影響）
+        var narrowW = Math.min(maxW, (W - 2 * qrW - gap * (cols - 1)) / cols);
+        [fullW, narrowW].forEach(function (w) {
+          if (w < 80) return;
+          // 卡片整組水平置中，所以右側空白只有剩餘寬度的一半，再加上最後一列的空格
+          var sideFree = (W - cols * w - (cols - 1) * gap) / 2;
+          var emptyW = sideFree + (rows * cols - n) * (w + gap);
+          var availH = emptyW >= qrW ? H : H - qrH;
+          var h = Math.min(maxH, Math.floor((availH - gap * (rows - 1)) / rows));
+          var ub = Math.min(MAX_U, (h - 30) / k, w / L);
+          if (ub >= MIN_U) cands.push({ cols: cols, w: w, h: h, rows: rows, empty: rows * cols - n, ub: ub });
+        });
       }
-      cands.sort(function (a, b) { return b.ub - a.ub; });
+      // 字級最大的優先；字級差不多（差距 8% 以內）時，選列數少、最後一列空格少的，排起來比較整齊
+      var TIE = 1.08;
+      function better(a, b) {   // a 是否比 b 好
+        var ua = a.u != null ? a.u : a.ub, ubb = b.u != null ? b.u : b.ub;
+        if (ua > ubb * TIE) return true;
+        if (ubb > ua * TIE) return false;
+        return a.rows !== b.rows ? a.rows < b.rows : (a.empty !== b.empty ? a.empty < b.empty : ua > ubb);
+      }
+      cands.sort(function (a, b) { return better(a, b) ? -1 : better(b, a) ? 1 : 0; });
 
       function fits(c, u) {
-        applyFit(c.cols, c.h, u);
+        applyFit(c.cols, c.h, u, c.w);
         // 只看高度：角落緞帶會超出卡片寬度（被裁掉），不能當成溢出；中文會自動換行
         return !Array.prototype.some.call(cards, function (el) {
           return el.scrollHeight > el.clientHeight + 1;
@@ -148,22 +168,32 @@
       }
       // 依序實際排版檢查；估算偏大（例如超長詞換行）時再縮小字級
       var best = null;
-      for (var i = 0; i < cands.length && i < 4; i++) {
+      for (var i = 0; i < cands.length && i < 6; i++) {
         var c = cands[i];
-        if (best && c.ub <= best.u) break; // 剩下的不可能更好
+        if (best && !better(c, best)) continue;         // 連理想值都比不過目前最佳，跳過
         var u = c.ub;
-        while (u > MIN_U && !fits(c, u)) u = Math.max(MIN_U, u * .92);
-        if (fits(c, u) && (!best || u > best.u)) best = { cols: c.cols, h: c.h, u: u };
+        while (u > MIN_U && !fits(c, u)) u = Math.max(MIN_U, u * .92);   // 超長詞換行時縮小
+        if (!fits(c, u)) continue;
+        var cand = { cols: c.cols, w: c.w, h: c.h, rows: c.rows, empty: c.empty, u: u };
+        if (!best || better(cand, best)) best = cand;
       }
 
-      if (best) applyFit(best.cols, best.h, best.u);
-      else applyFit(Math.max(1, Math.floor(W / 160)), 0, MIN_U); // 太多份：不固定列高，允許捲動
+      if (best) {
+        applyFit(best.cols, best.h, best.u, best.w);
+        // 份數少、下方還很空時，整組卡片放在畫面正中央
+        var totalH = best.rows * best.h + (best.rows - 1) * gap;
+        gridEl.style.alignContent = totalH <= H - 2 * qrH ? 'center' : 'start';
+      } else {
+        applyFit(Math.max(1, Math.floor(W / 160)), 0, MIN_U); // 太多份：不固定列高，允許捲動
+        gridEl.style.alignContent = 'start';
+      }
     }
 
     function renderGrid() {
       if (!gifts.length) {
         gridEl.style.gridTemplateColumns = '';
         gridEl.style.gridAutoRows = '';
+        gridEl.style.alignContent = '';
         gridEl.innerHTML = '<div class="empty">還沒有人填寫喔～<br>掃描右下角 QR code 開始吧！</div>';
         return;
       }
@@ -222,7 +252,9 @@
       var W = carEl.clientWidth || window.innerWidth;
       var rows = wantRows(list0.length);
       var gap = W > 1200 ? 22 : 14;
-      var rh = Math.floor((H - gap * (rows - 1)) / rows);
+      var fullRows = H > 640 ? 3 : 2;
+      var rhMax = Math.floor((H - gap * (fullRows - 1)) / fullRows * 1.2); // 只有 1～2 份時也不要一張撐滿整個畫面高
+      var rh = Math.min(rhMax, Math.floor((H - gap * (rows - 1)) / rows));
       var cw = Math.round(rh * 1.3);
       // 預留公佈後「主人名字」那一行的高度，之後局部更新也不會溢出
       var u = Math.max(12, Math.min(40, (rh - 30) / 8.4));

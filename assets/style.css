@@ -264,6 +264,7 @@ body.hide-ui .toolbar:hover { opacity: 1; }
   grid-template-columns: repeat(auto-fill, minmax(var(--card-min, 280px), 1fr));
   gap: var(--gap, 18px);
   align-content: start;
+  justify-content: center;
 }
 
 /* 禮物吊牌 */
