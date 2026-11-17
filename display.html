@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Serif+TC:wght@700;900&display=swap">
-  <link rel="stylesheet" href="assets/style.css?v=13">
+  <link rel="stylesheet" href="assets/style.css?v=16">
 </head>
 <body>
   <main class="display">
@@ -15,11 +15,7 @@
       <h1><span class="emoji">🎁</span> 今天的禮物們</h1>
       <span class="count" id="count"></span>
       <div class="toolbar">
-        <div class="seg">
-          <button class="small active" data-mode="all" title="快捷鍵 A">全部顯示</button>
-          <button class="small" data-mode="carousel" title="快捷鍵 C">動態展示</button>
-        </div>
-        <label title="動態展示中每份禮物放大停留的秒數">焦點 <input type="number" id="secInput" min="2" max="60"> 秒</label>
+        <!-- 顯示模式與速度改由管理後台設定 -->
         <button class="small ghost" id="qrBtn" title="快捷鍵 Q">QR code</button>
         <button class="small ghost" id="fsBtn" title="快捷鍵 F">全螢幕</button>
       </div>
@@ -51,21 +47,19 @@
     var lastRevealAt = 0;
     var lastResetAt = 0;
     var mode = 'all';
-    var carouselSec = cfg.CAROUSEL_SEC || 6;
+    var carouselSec = cfg.CAROUSEL_SEC || 6;     // 按 ← → 放大禮物時停留的秒數
+    var speedLevel = cfg.MARQUEE_SPEED || 3;     // 動態展示移動速度 1～10（由後台設定）
     var lastSig = '';
     var revealOpen = false;
+    var lastDisplaySig = null;                   // 後台顯示設定，變了才套用
 
-    try {
-      mode = localStorage.getItem('display_mode') || 'all';
-      carouselSec = Number(localStorage.getItem('display_sec')) || carouselSec;
-    } catch (e) {}
+    // 後台還沒設定過時，先沿用這台電腦上次的模式
+    try { mode = localStorage.getItem('display_mode') || 'all'; } catch (e) {}
 
     var gridEl = document.getElementById('grid');
     var carEl = document.getElementById('carousel');
     var countEl = document.getElementById('count');
     var statusEl = document.getElementById('status');
-    var secInput = document.getElementById('secInput');
-    secInput.value = carouselSec;
 
     /* ---------- QR code ---------- */
     var formUrl = new URL('index.html', location.href).href;
@@ -192,7 +186,7 @@
     /* ---------- 動態展示：跑馬燈禮物牆（← → 可手動放大某份禮物） ---------- */
     var marqueeEl = document.getElementById('marquee');
     var spotEl = document.getElementById('spot');
-    var MQ_SPEED = 45;          // 跑馬燈速度（px/秒）
+    var MQ_SPEED = speedLevel * 15;   // 跑馬燈速度（px/秒），等級 3 = 45px/秒
     var FRESH_SEC = 90;         // 新禮物在牆上發光標示 NEW 的秒數（至少跑完一圈，確保會經過畫面）
     var spotIdx = -1, spotTimer = null;
     var freshAt = {};           // 禮物 id → 飛進來的時間
@@ -515,9 +509,6 @@
     function setMode(m) {
       mode = m;
       try { localStorage.setItem('display_mode', m); } catch (e) {}
-      document.querySelectorAll('.seg button').forEach(function (b) {
-        b.classList.toggle('active', b.dataset.mode === m);
-      });
       gridEl.hidden = m !== 'all';
       carEl.hidden = m !== 'carousel';
       restartCarousel();
@@ -532,15 +523,25 @@
       startSnow();
     }
 
-    document.querySelectorAll('.seg button').forEach(function (b) {
-      b.addEventListener('click', function () { setMode(b.dataset.mode); });
-    });
-    secInput.addEventListener('change', function () {
-      carouselSec = Math.min(60, Math.max(2, Number(secInput.value) || 6));
-      secInput.value = carouselSec;
-      try { localStorage.setItem('display_sec', carouselSec); } catch (e) {}
-      restartCarousel();
-    });
+    // 調整速度：每一列從目前位置接續，只改變流動速度，不會跳動
+    function setSpeed(level) {
+      speedLevel = Math.min(10, Math.max(1, Math.round(Number(level)) || 3));
+      MQ_SPEED = speedLevel * 15;
+      marqueeEl.querySelectorAll('.mq-track').forEach(function (t) {
+        var x = trackX(t);
+        t.style.animationDuration = (Number(t.dataset.half) / MQ_SPEED).toFixed(2) + 's';
+        setTrackX(t, x);
+      });
+    }
+
+    // 套用後台的顯示設定；只在後台改變時才套用，所以現場按 A / C 臨時切換仍有效
+    function applyDisplaySettings(st) {
+      var sig = (st.displayMode || '') + '|' + (st.speed || '');
+      if (sig === lastDisplaySig) return;
+      lastDisplaySig = sig;
+      if (st.speed) setSpeed(st.speed);
+      if ((st.displayMode === 'all' || st.displayMode === 'carousel') && st.displayMode !== mode) setMode(st.displayMode);
+    }
 
     function toggleFullscreen() {
       if (document.fullscreenElement) document.exitFullscreen();
@@ -636,14 +637,17 @@
         var st = data.state || {};
         var revealAt = Number(st.revealAt) || 0;
         var resetAt = Number(st.resetAt) || 0;
-        if (resetAt !== lastResetAt) { seen.clear(); lastResetAt = resetAt; }
+        // 只有 resetAt 變大才算重置（舊版後端公佈時會把 resetAt 洗掉，不能誤判成重置）
+        if (resetAt > lastResetAt) { if (!firstLoad) seen.clear(); lastResetAt = resetAt; }
         if (firstLoad) {
           // 第一次載入不重播舊的公佈
           lastRevealAt = revealAt;
           gifts.forEach(function (g) { seen.add(g.id); });
           firstLoad = false;
           render(true);
+          applyDisplaySettings(st);
         } else {
+          applyDisplaySettings(st);
           render(false);
           if (revealAt > lastRevealAt) {
             lastRevealAt = revealAt;

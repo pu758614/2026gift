@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Serif+TC:wght@700;900&display=swap">
-  <link rel="stylesheet" href="assets/style.css?v=13">
+  <link rel="stylesheet" href="assets/style.css?v=16">
 </head>
 <body>
   <main class="admin">
@@ -32,6 +32,25 @@
         <button class="small ghost" id="logoutBtn">登出</button>
         <button class="small" id="resetBtn">全部重置</button>
       </div>
+      <section class="panel settings" id="settingsPanel">
+        <h2>📺 大螢幕顯示</h2>
+        <div class="setting-row">
+          <span class="setting-label">模式</span>
+          <div class="seg" id="modeSeg">
+            <button class="small" data-mode="all">全部顯示</button>
+            <button class="small" data-mode="carousel">動態展示</button>
+          </div>
+        </div>
+        <div class="setting-row" id="speedRow">
+          <span class="setting-label">速度</span>
+          <span class="speed-hint">慢</span>
+          <input type="range" id="speedInput" min="1" max="10" step="1" value="3">
+          <span class="speed-hint">快</span>
+          <b id="speedVal">3</b>
+        </div>
+        <p class="setting-msg" id="settingsMsg">修改後大螢幕約 3 秒內會跟著切換。</p>
+      </section>
+
       <p class="error" id="err"></p>
       <div class="table-wrap">
         <table>
@@ -100,6 +119,7 @@
       try {
         var data = await API.post({ action: 'adminList', password: password });
         render(data.gifts || []);
+        showSettings(data.state || {});
         $('err').textContent = '';
         $('meta').textContent = '共 ' + data.gifts.length + ' 筆・更新於 ' + new Date().toLocaleTimeString();
       } catch (e) {
@@ -162,6 +182,58 @@
         b.disabled = true;
         act({ action: 'delete', id: id }, '已刪除 #' + id);
       }
+    });
+
+    /* ---------- 大螢幕顯示設定 ---------- */
+    var settingsBusy = false;   // 正在送出或拖動滑桿時，不要被自動更新蓋掉
+    var speedTimer = null;
+
+    function showSettings(st) {
+      if (settingsBusy) return;
+      var m = st.displayMode || 'all';
+      var s = Number(st.speed) || (window.APP_CONFIG && APP_CONFIG.MARQUEE_SPEED) || 3;
+      document.querySelectorAll('#modeSeg button').forEach(function (b) {
+        b.classList.toggle('active', b.dataset.mode === m);
+      });
+      $('speedInput').value = s;
+      $('speedVal').textContent = s;
+      $('speedRow').classList.toggle('dim', m !== 'carousel');
+    }
+
+    async function saveSettings(patch, okMsg) {
+      settingsBusy = true;
+      $('settingsMsg').textContent = '儲存中…';
+      $('settingsMsg').className = 'setting-msg';
+      try {
+        var res = await API.post(Object.assign({ action: 'setDisplay', password: password }, patch));
+        settingsBusy = false;
+        showSettings(res.state || {});
+        $('settingsMsg').textContent = okMsg + '，大螢幕約 3 秒內會跟著切換。';
+      } catch (e) {
+        settingsBusy = false;
+        $('settingsMsg').className = 'setting-msg error';
+        $('settingsMsg').textContent = e.message === '未知的動作'
+          ? '後端還是舊版：請把 apps-script/Code.gs 貼到 Apps Script 並「部署 → 管理部署作業 → 新版本」。'
+          : e.message;
+        load();
+      }
+    }
+
+    $('modeSeg').addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-mode]');
+      if (!b || b.classList.contains('active')) return;
+      document.querySelectorAll('#modeSeg button').forEach(function (x) { x.classList.toggle('active', x === b); });
+      $('speedRow').classList.toggle('dim', b.dataset.mode !== 'carousel');
+      saveSettings({ mode: b.dataset.mode }, '已切換為「' + b.textContent + '」');
+    });
+
+    // 拖動時即時顯示數字，停手 0.4 秒後才送出，避免連續送出很多次
+    $('speedInput').addEventListener('input', function () {
+      settingsBusy = true;
+      $('speedVal').textContent = this.value;
+      clearTimeout(speedTimer);
+      var v = Number(this.value);
+      speedTimer = setTimeout(function () { saveSettings({ speed: v }, '速度已設為 ' + v); }, 400);
     });
 
     $('resetBtn').addEventListener('click', function () {

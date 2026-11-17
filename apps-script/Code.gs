@@ -48,6 +48,9 @@ function doPost(e) {
       case 'reset':
         checkPassword_(body.password);
         return json_(withLock_(resetAll_));
+      case 'setDisplay':
+        checkPassword_(body.password);
+        return json_(withLock_(function () { return setDisplay_(body); }));
       case 'login':
         checkPassword_(body.password);
         return json_({ ok: true });
@@ -127,6 +130,19 @@ function resetAll_() {
   return { ok: true };
 }
 
+/** 大螢幕顯示設定：模式（all / carousel）與動態展示速度（1～10） */
+function setDisplay_(body) {
+  var patch = {};
+  if (body.mode === 'all' || body.mode === 'carousel') patch.displayMode = body.mode;
+  if (body.speed != null) {
+    var s = Math.round(Number(body.speed));
+    if (s >= 1 && s <= 10) patch.speed = s;
+  }
+  if (!Object.keys(patch).length) throw new Error('沒有要更新的設定');
+  writeState_(patch);
+  return { ok: true, state: readState_() };
+}
+
 /* ---------- 工具 ---------- */
 
 function readGifts_() {
@@ -155,7 +171,10 @@ function readState_() {
   try { return JSON.parse(v); } catch (e) { return { revealId: null, revealAt: 0 }; }
 }
 
-function writeState_(state) {
+// 合併寫入：只更新傳入的欄位，保留其他欄位（例如公佈時不會洗掉 resetAt 和顯示設定）
+function writeState_(patch) {
+  var state = readState_();
+  Object.keys(patch).forEach(function (k) { state[k] = patch[k]; });
   stateSheet_().getRange('A1').setValue(JSON.stringify(state));
 }
 
