@@ -4,12 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>交換禮物 — 大螢幕</title>
-  <link rel="stylesheet" href="assets/style.css?v=10">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Serif+TC:wght@700;900&display=swap">
+  <link rel="stylesheet" href="assets/style.css?v=13">
 </head>
 <body>
   <main class="display">
     <header>
-      <h1>🎁 今天的禮物們</h1>
+      <h1><span class="emoji">🎁</span> 今天的禮物們</h1>
       <span class="count" id="count"></span>
       <div class="toolbar">
         <div class="seg">
@@ -144,8 +147,9 @@
 
       function fits(c, u) {
         applyFit(c.cols, c.h, u);
+        // 只看高度：角落緞帶會超出卡片寬度（被裁掉），不能當成溢出；中文會自動換行
         return !Array.prototype.some.call(cards, function (el) {
-          return el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1;
+          return el.scrollHeight > el.clientHeight + 1;
         });
       }
       // 依序實際排版檢查；估算偏大（例如超長詞換行）時再縮小字級
@@ -481,7 +485,7 @@
         if (!snowRunning) return ctx.clearRect(0, 0, snowCv.width, snowCv.height);
         var w = snowCv.width, h = snowCv.height;
         ctx.clearRect(0, 0, w, h);
-        ctx.fillStyle = 'rgba(255,255,255,.55)';
+        ctx.fillStyle = 'rgba(255,248,232,.5)';
         flakes.forEach(function (f) {
           f.y += f.v / h * 1.6; f.d += .01;
           if (f.y > 1.02) { f.y = -.02; f.x = Math.random(); }
@@ -599,7 +603,7 @@
       var ctx = canvas.getContext('2d');
       var W = canvas.width = window.innerWidth;
       var H = canvas.height = window.innerHeight;
-      var colors = ['#c0392b', '#f2c14e', '#2e7d4f', '#ffffff', '#e67e22'];
+      var colors = ['#9b2c2f', '#d9b260', '#f1d996', '#fbf6ea', '#3d6a4e', '#b48a3a'];
       var parts = [];
       for (var i = 0; i < 220; i++) {
         parts.push({
@@ -658,6 +662,14 @@
 
     setMode(mode);
     poll();
+
+    // 網路字型載入後字寬會變，重新排版一次避免文字溢出
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(function () {
+        if (firstLoad) return;
+        if (mode === 'all') fitGrid(); else buildMarquee();
+      });
+    }
   </script>
 </body>
 </html>
