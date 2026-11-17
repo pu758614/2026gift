@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>交換禮物 — 填寫禮物特徵</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <main class="form-wrap">
+    <h1>🎁 交換禮物</h1>
+    <p class="sub">幫你帶來的禮物寫三個特徵吧！</p>
+
+    <section class="panel" id="formPanel">
+      <div class="rules">
+        可以是<b>名詞、動詞或形容詞</b>，<b>不可以寫到禮物本身</b>。<br>
+        三個裡面<b>一個要是假的</b>，請勾選哪一個是假的（只有主持人看得到）。<br>
+        例：防曬乳 → 太陽、<s>食物</s>、皮膚
+      </div>
+
+      <form id="giftForm" autocomplete="off" novalidate>
+        <div class="group">
+          <label class="field" for="name">你的大名</label>
+          <input type="text" id="name" maxlength="30" placeholder="例如：王小明" required>
+        </div>
+
+        <div class="group">
+          <label class="field">禮物的三個特徵</label>
+          <div class="word-row">
+            <input type="text" class="word" maxlength="20" placeholder="特徵 1" required>
+            <label class="fake-toggle"><input type="radio" name="fake" value="0">假的</label>
+          </div>
+          <div class="word-row">
+            <input type="text" class="word" maxlength="20" placeholder="特徵 2" required>
+            <label class="fake-toggle"><input type="radio" name="fake" value="1">假的</label>
+          </div>
+          <div class="word-row">
+            <input type="text" class="word" maxlength="20" placeholder="特徵 3" required>
+            <label class="fake-toggle"><input type="radio" name="fake" value="2">假的</label>
+          </div>
+        </div>
+
+        <p class="error" id="err"></p>
+        <button type="submit" class="submit-btn" id="submitBtn">送出 🎄</button>
+      </form>
+    </section>
+
+    <section class="panel success" id="donePanel" hidden>
+      <div class="big">🎉</div>
+      <h2>送出成功！</h2>
+      <p>你的禮物編號是</p>
+      <div class="num" id="doneNum"></div>
+      <p>請看大螢幕，等待交換開始吧！</p>
+      <button type="button" class="ghost" id="againBtn" style="background:#eee;color:#333;margin-top:12px">我要再填一份</button>
+    </section>
+  </main>
+
+  <script src="assets/config.js"></script>
+  <script src="assets/api.js"></script>
+  <script>
+    var form = document.getElementById('giftForm');
+    var err = document.getElementById('err');
+    var btn = document.getElementById('submitBtn');
+    var formPanel = document.getElementById('formPanel');
+    var donePanel = document.getElementById('donePanel');
+
+    function showDone(id) {
+      document.getElementById('doneNum').textContent = '#' + id;
+      formPanel.hidden = true;
+      donePanel.hidden = false;
+    }
+
+    try {
+      var saved = localStorage.getItem('gift_submitted_id');
+      if (saved) showDone(saved);
+    } catch (e) {}
+
+    document.getElementById('againBtn').addEventListener('click', function () {
+      if (!confirm('確定要再填一份嗎？（每個人只要填一次喔）')) return;
+      try { localStorage.removeItem('gift_submitted_id'); } catch (e) {}
+      form.reset();
+      donePanel.hidden = true;
+      formPanel.hidden = false;
+    });
+
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      err.textContent = '';
+      var name = document.getElementById('name').value.trim();
+      var words = Array.prototype.map.call(document.querySelectorAll('.word'), function (i) { return i.value.trim(); });
+      var fake = form.querySelector('input[name=fake]:checked');
+
+      if (!name) return (err.textContent = '請填寫你的大名');
+      if (words.some(function (w) { return !w; })) return (err.textContent = '請填滿三個特徵');
+      if (new Set(words).size < 3) return (err.textContent = '三個特徵不能重複');
+      if (!fake) return (err.textContent = '請勾選哪一個是假的');
+
+      btn.disabled = true;
+      btn.textContent = '送出中…';
+      try {
+        var res = await API.post({ action: 'submit', name: name, words: words, fakeIndex: Number(fake.value) });
+        try { localStorage.setItem('gift_submitted_id', res.id); } catch (e) {}
+        showDone(res.id);
+      } catch (ex) {
+        err.textContent = ex.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '送出 🎄';
+      }
+    });
+  </script>
+</body>
+</html>

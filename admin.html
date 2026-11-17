@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>交換禮物 — 管理後台</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <main class="admin">
+    <section class="panel login" id="loginPanel">
+      <h2 style="margin-top:0">🔒 管理後台</h2>
+      <label class="field" for="pw">請輸入密碼</label>
+      <div class="row">
+        <input type="password" id="pw" autocomplete="current-password">
+        <button id="loginBtn">登入</button>
+      </div>
+      <p class="error" id="loginErr"></p>
+    </section>
+
+    <section id="mainPanel" hidden>
+      <h1>🎅 管理後台</h1>
+      <div class="top">
+        <button class="ghost small" id="refreshBtn">重新整理</button>
+        <button class="ghost small" onclick="window.open('display.html', '_blank')">開啟大螢幕 ↗</button>
+        <span class="meta" id="meta"></span>
+        <span class="spacer"></span>
+        <button class="small ghost" id="logoutBtn">登出</button>
+        <button class="small" id="resetBtn">全部重置</button>
+      </div>
+      <p class="error" id="err"></p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>#</th><th>姓名</th><th>三個特徵（紅色劃線 = 假的）</th><th>狀態</th><th>操作</th></tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="assets/config.js"></script>
+  <script src="assets/api.js"></script>
+  <script>
+    var password = '';
+    try { password = sessionStorage.getItem('admin_pw') || ''; } catch (e) {}
+    var refreshTimer = null;
+    var busy = false;
+
+    var $ = function (id) { return document.getElementById(id); };
+
+    function toast(msg) {
+      var t = document.createElement('div');
+      t.className = 'toast';
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(function () { t.remove(); }, 2200);
+    }
+
+    async function login() {
+      $('loginErr').textContent = '';
+      var pw = $('pw').value;
+      if (!pw) return;
+      $('loginBtn').disabled = true;
+      try {
+        await API.post({ action: 'login', password: pw });
+        password = pw;
+        try { sessionStorage.setItem('admin_pw', pw); } catch (e) {}
+        enter();
+      } catch (e) {
+        $('loginErr').textContent = e.message;
+      } finally {
+        $('loginBtn').disabled = false;
+      }
+    }
+
+    function enter() {
+      $('loginPanel').hidden = true;
+      $('mainPanel').hidden = false;
+      load();
+      clearInterval(refreshTimer);
+      refreshTimer = setInterval(function () { if (!busy) load(); }, 5000);
+    }
+
+    function logout() {
+      password = '';
+      try { sessionStorage.removeItem('admin_pw'); } catch (e) {}
+      clearInterval(refreshTimer);
+      $('mainPanel').hidden = true;
+      $('loginPanel').hidden = false;
+      $('pw').value = '';
+    }
+
+    async function load() {
+      try {
+        var data = await API.post({ action: 'adminList', password: password });
+        render(data.gifts || []);
+        $('err').textContent = '';
+        $('meta').textContent = '共 ' + data.gifts.length + ' 筆・更新於 ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        if (e.message === '密碼錯誤') return logout();
+        $('err').textContent = e.message;
+      }
+    }
+
+    function render(gifts) {
+      if (!gifts.length) {
+        $('tbody').innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;padding:24px">目前沒有資料</td></tr>';
+        return;
+      }
+      $('tbody').innerHTML = gifts.map(function (g) {
+        var words = g.words.map(function (w, i) {
+          return '<span class="w' + (i === g.fakeIndex ? ' fake' : '') + '">' + escapeHtml(w) + '</span>';
+        }).join('');
+        return '<tr>' +
+          '<td><b>' + g.id + '</b></td>' +
+          '<td>' + escapeHtml(g.name) + '</td>' +
+          '<td>' + words + '</td>' +
+          '<td>' + (g.revealed ? '<span class="tag">已公佈</span>' : '') + '</td>' +
+          '<td class="actions">' +
+            '<button class="small gold" data-act="reveal" data-id="' + g.id + '">' + (g.revealed ? '再公佈一次' : '公佈') + '</button>' +
+            '<button class="small" data-act="delete" data-id="' + g.id + '" data-name="' + escapeHtml(g.name) + '">刪除</button>' +
+          '</td></tr>';
+      }).join('');
+    }
+
+    async function act(payload, okMsg) {
+      busy = true;
+      try {
+        await API.post(Object.assign({ password: password }, payload));
+        toast(okMsg);
+        await load();
+      } catch (e) {
+        $('err').textContent = e.message;
+      } finally {
+        busy = false;
+      }
+    }
+
+    $('tbody').addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-act]');
+      if (!b) return;
+      var id = Number(b.dataset.id);
+      if (b.dataset.act === 'reveal') {
+        b.disabled = true;
+        act({ action: 'reveal', id: id }, '已公佈禮物 #' + id + '，請看大螢幕！');
+      } else if (b.dataset.act === 'delete') {
+        if (!confirm('確定要刪除 #' + id + '（' + b.dataset.name + '）嗎？')) return;
+        b.disabled = true;
+        act({ action: 'delete', id: id }, '已刪除 #' + id);
+      }
+    });
+
+    $('resetBtn').addEventListener('click', function () {
+      var ans = prompt('這會刪除所有人的資料，無法復原！\n請輸入 RESET 確認：');
+      if (ans !== 'RESET') return;
+      act({ action: 'reset' }, '已全部重置');
+    });
+
+    $('loginBtn').addEventListener('click', login);
+    $('pw').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
+    $('refreshBtn').addEventListener('click', load);
+    $('logoutBtn').addEventListener('click', logout);
+
+    if (password) enter();
+  </script>
+</body>
+</html>

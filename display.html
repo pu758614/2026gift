@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>交換禮物 — 大螢幕</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <main class="display">
+    <header>
+      <h1>🎁 今天的禮物們</h1>
+      <span class="count" id="count"></span>
+      <div class="toolbar">
+        <div class="seg">
+          <button class="small active" data-mode="all" title="快捷鍵 A">全部顯示</button>
+          <button class="small" data-mode="carousel" title="快捷鍵 C">輪播</button>
+        </div>
+        <label>每張 <input type="number" id="secInput" min="2" max="60"> 秒</label>
+        <button class="small ghost" id="qrBtn" title="快捷鍵 Q">QR code</button>
+        <button class="small ghost" id="fsBtn" title="快捷鍵 F">全螢幕</button>
+      </div>
+    </header>
+
+    <section class="grid" id="grid"><div class="empty">載入中…</div></section>
+    <section class="carousel" id="carousel" hidden></section>
+  </main>
+
+  <div class="qr-box" id="qrBox">
+    <div id="qr"></div>
+    掃我填寫禮物特徵
+  </div>
+
+  <div class="status-dot" id="status"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="assets/config.js"></script>
+  <script src="assets/api.js"></script>
+  <script>
+    var cfg = window.APP_CONFIG;
+    var gifts = [];
+    var seen = new Set();
+    var firstLoad = true;
+    var lastRevealAt = 0;
+    var lastResetAt = 0;
+    var mode = 'all';
+    var carouselIdx = 0;
+    var carouselTimer = null;
+    var carouselSec = cfg.CAROUSEL_SEC || 6;
+    var lastSig = '';
+    var revealOpen = false;
+
+    try {
+      mode = localStorage.getItem('display_mode') || 'all';
+      carouselSec = Number(localStorage.getItem('display_sec')) || carouselSec;
+    } catch (e) {}
+
+    var gridEl = document.getElementById('grid');
+    var carEl = document.getElementById('carousel');
+    var countEl = document.getElementById('count');
+    var statusEl = document.getElementById('status');
+    var secInput = document.getElementById('secInput');
+    secInput.value = carouselSec;
+
+    /* ---------- QR code ---------- */
+    var formUrl = new URL('index.html', location.href).href;
+    var qrBox = document.getElementById('qrBox');
+    var qrState = 0; // 0 小, 1 大, 2 隱藏
+    function drawQr() {
+      var el = document.getElementById('qr');
+      el.innerHTML = '';
+      var size = qrState === 1 ? Math.min(window.innerWidth, window.innerHeight) * 0.6 : 150;
+      if (window.QRCode) new QRCode(el, { text: formUrl, width: size, height: size, correctLevel: QRCode.CorrectLevel.M });
+      else el.textContent = formUrl;
+      qrBox.className = 'qr-box' + (qrState === 1 ? ' big' : '') + (qrState === 2 ? ' hidden' : '');
+    }
+    function cycleQr() { qrState = (qrState + 1) % 3; drawQr(); }
+    drawQr();
+    qrBox.addEventListener('click', cycleQr);
+    document.getElementById('qrBtn').addEventListener('click', cycleQr);
+
+    /* ---------- 卡片 ---------- */
+    function cardHtml(g, extraClass) {
+      var words = g.words.map(function (w, i) {
+        var fake = g.revealed && g.fakeIndex === i;
+        return '<li class="' + (fake ? 'fake' : '') + '">' + escapeHtml(w) + '</li>';
+      }).join('');
+      var owner = g.revealed ? '<div class="owner">🎅 ' + escapeHtml(g.name) + ' 的禮物</div>' : '';
+      return '<article class="gift-card ' + (g.revealed ? 'revealed ' : '') + (extraClass || '') + '">' +
+        '<div class="no">禮物 #' + g.id + '</div><ul>' + words + '</ul>' + owner + '</article>';
+    }
+
+    function sizeGrid(n) {
+      var s;
+      if (n <= 4) s = [400, 40, 28, 24];
+      else if (n <= 8) s = [320, 32, 24, 20];
+      else if (n <= 15) s = [260, 26, 20, 18];
+      else if (n <= 24) s = [220, 22, 18, 14];
+      else if (n <= 35) s = [180, 18, 15, 12];
+      else s = [150, 15, 13, 10];
+      gridEl.style.setProperty('--card-min', s[0] + 'px');
+      gridEl.style.setProperty('--word-size', s[1] + 'px');
+      gridEl.style.setProperty('--no-size', s[2] + 'px');
+      gridEl.style.setProperty('--pad', s[3] + 'px');
+      gridEl.style.setProperty('--gap', Math.max(10, s[3]) + 'px');
+    }
+
+    function renderGrid() {
+      if (!gifts.length) {
+        gridEl.innerHTML = '<div class="empty">還沒有人填寫喔～<br>掃描右下角 QR code 開始吧！</div>';
+        return;
+      }
+      sizeGrid(gifts.length);
+      gridEl.innerHTML = gifts.map(function (g) {
+        return cardHtml(g, seen.has(g.id) ? '' : 'new');
+      }).join('');
+    }
+
+    function renderCarousel(animate) {
+      if (!gifts.length) {
+        carEl.innerHTML = '<div class="empty">還沒有人填寫喔～</div>';
+        return;
+      }
+      carouselIdx = ((carouselIdx % gifts.length) + gifts.length) % gifts.length;
+      carEl.innerHTML = cardHtml(gifts[carouselIdx], animate ? 'slide' : '') +
+        '<div class="progress">' + (carouselIdx + 1) + ' / ' + gifts.length + '</div>';
+    }
+
+    function render(force) {
+      if (firstLoad) return;
+      countEl.textContent = gifts.length ? '共 ' + gifts.length + ' 份禮物' : '';
+      var sig = JSON.stringify(gifts);
+      if (!force && sig === lastSig) return;
+      lastSig = sig;
+      if (mode === 'all') renderGrid(); else renderCarousel(false);
+      gifts.forEach(function (g) { seen.add(g.id); });
+    }
+
+    function setMode(m) {
+      mode = m;
+      try { localStorage.setItem('display_mode', m); } catch (e) {}
+      document.querySelectorAll('.seg button').forEach(function (b) {
+        b.classList.toggle('active', b.dataset.mode === m);
+      });
+      gridEl.hidden = m !== 'all';
+      carEl.hidden = m !== 'carousel';
+      restartCarousel();
+      render(true);
+    }
+
+    function restartCarousel() {
+      clearInterval(carouselTimer);
+      if (mode !== 'carousel') return;
+      carouselTimer = setInterval(function () {
+        if (revealOpen) return;
+        carouselIdx++;
+        renderCarousel(true);
+      }, carouselSec * 1000);
+    }
+
+    document.querySelectorAll('.seg button').forEach(function (b) {
+      b.addEventListener('click', function () { setMode(b.dataset.mode); });
+    });
+    secInput.addEventListener('change', function () {
+      carouselSec = Math.min(60, Math.max(2, Number(secInput.value) || 6));
+      secInput.value = carouselSec;
+      try { localStorage.setItem('display_sec', carouselSec); } catch (e) {}
+      restartCarousel();
+    });
+
+    function toggleFullscreen() {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+    }
+    document.getElementById('fsBtn').addEventListener('click', toggleFullscreen);
+
+    document.addEventListener('keydown', function (e) {
+      if (e.target.tagName === 'INPUT') return;
+      var k = e.key.toLowerCase();
+      if (k === 'a') setMode('all');
+      else if (k === 'c') setMode('carousel');
+      else if (k === 'q') cycleQr();
+      else if (k === 'f') toggleFullscreen();
+      else if (k === 'h') document.body.classList.toggle('hide-ui');
+      else if (k === 'escape' && revealOpen) closeReveal();
+      else if (mode === 'carousel' && (k === 'arrowright' || k === 'arrowleft')) {
+        carouselIdx += k === 'arrowright' ? 1 : -1;
+        renderCarousel(true);
+        restartCarousel();
+      }
+    });
+
+    /* ---------- 公佈動畫 ---------- */
+    var overlay = null;
+    var closeTimer = null;
+    var confettiStop = null;
+
+    function showReveal(g) {
+      closeReveal();
+      revealOpen = true;
+      overlay = document.createElement('div');
+      overlay.className = 'reveal-overlay';
+      var words = g.words.map(function (w, i) {
+        return '<li class="' + (i === g.fakeIndex ? 'fake' : '') + '">' + escapeHtml(w) + '</li>';
+      }).join('');
+      overlay.innerHTML =
+        '<canvas></canvas>' +
+        '<div class="reveal-card">' +
+          '<div class="no">🎁 禮物 #' + g.id + ' 公佈！</div>' +
+          '<ul>' + words + '</ul>' +
+          '<div class="fake-label">假的是「' + escapeHtml(g.words[g.fakeIndex]) + '」！</div>' +
+          '<div class="who">這是 <b>' + escapeHtml(g.name) + '</b> 的禮物！</div>' +
+        '</div>' +
+        '<div class="reveal-hint">點一下關閉</div>';
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', closeReveal);
+      setTimeout(function () {
+        if (overlay) confettiStop = confetti(overlay.querySelector('canvas'));
+      }, 3000);
+      closeTimer = setTimeout(closeReveal, 12000);
+    }
+
+    function closeReveal() {
+      clearTimeout(closeTimer);
+      if (confettiStop) { confettiStop(); confettiStop = null; }
+      if (overlay) { overlay.remove(); overlay = null; }
+      revealOpen = false;
+    }
+
+    function confetti(canvas) {
+      var ctx = canvas.getContext('2d');
+      var W = canvas.width = window.innerWidth;
+      var H = canvas.height = window.innerHeight;
+      var colors = ['#c0392b', '#f2c14e', '#2e7d4f', '#ffffff', '#e67e22'];
+      var parts = [];
+      for (var i = 0; i < 220; i++) {
+        parts.push({
+          x: W / 2 + (Math.random() - .5) * 200, y: H * .45,
+          vx: (Math.random() - .5) * 18, vy: -Math.random() * 18 - 6,
+          r: Math.random() * 6 + 4, rot: Math.random() * 6, vr: (Math.random() - .5) * .3,
+          c: colors[(Math.random() * colors.length) | 0]
+        });
+      }
+      var running = true;
+      (function frame() {
+        if (!running) return;
+        ctx.clearRect(0, 0, W, H);
+        parts.forEach(function (p) {
+          p.vy += .35; p.vx *= .99; p.x += p.vx; p.y += p.vy; p.rot += p.vr;
+          ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+          ctx.fillStyle = p.c; ctx.fillRect(-p.r / 2, -p.r / 4, p.r, p.r / 2);
+          ctx.restore();
+        });
+        if (parts.some(function (p) { return p.y < H + 20; })) requestAnimationFrame(frame);
+      })();
+      return function () { running = false; };
+    }
+
+    /* ---------- 輪詢 ---------- */
+    async function poll() {
+      try {
+        var data = await API.get('public');
+        gifts = data.gifts || [];
+        var st = data.state || {};
+        var revealAt = Number(st.revealAt) || 0;
+        var resetAt = Number(st.resetAt) || 0;
+        if (resetAt !== lastResetAt) { seen.clear(); lastResetAt = resetAt; }
+        if (firstLoad) {
+          // 第一次載入不重播舊的公佈
+          lastRevealAt = revealAt;
+          gifts.forEach(function (g) { seen.add(g.id); });
+          firstLoad = false;
+          render(true);
+        } else {
+          render(false);
+          if (revealAt > lastRevealAt) {
+            lastRevealAt = revealAt;
+            var g = gifts.find(function (x) { return x.id === st.revealId; });
+            if (g && g.revealed) showReveal(g);
+          }
+        }
+        statusEl.textContent = '● 已連線 ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        statusEl.textContent = '⚠ ' + e.message;
+        if (firstLoad) gridEl.innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>';
+      } finally {
+        setTimeout(poll, cfg.POLL_MS || 3000);
+      }
+    }
+
+    setMode(mode);
+    poll();
+  </script>
+</body>
+</html>
