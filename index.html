@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>交換禮物 — 填寫禮物特徵</title>
-  <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="assets/style.css?v=6">
 </head>
 <body>
   <main class="form-wrap">
@@ -82,6 +82,10 @@
       donePanel.hidden = true;
       formPanel.hidden = false;
     });
+
+    // 使用者修改後清掉舊的錯誤訊息
+    form.addEventListener('input', function () { err.textContent = ''; });
+    form.addEventListener('change', function () { err.textContent = ''; });
 
     form.addEventListener('submit', async function (e) {
       e.preventDefault();

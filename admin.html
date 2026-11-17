@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
   <title>交換禮物 — 管理後台</title>
-  <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="assets/style.css?v=6">
 </head>
 <body>
   <main class="admin">
@@ -105,7 +105,12 @@
       }
     }
 
-    function render(gifts) {
+    var lastSig = '';
+    function render(gifts, force) {
+      // 資料沒變就不重繪，避免按下按鈕的瞬間表格被換掉
+      var sig = JSON.stringify(gifts);
+      if (!force && sig === lastSig) return;
+      lastSig = sig;
       if (!gifts.length) {
         $('tbody').innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;padding:24px">目前沒有資料</td></tr>';
         return;
@@ -131,9 +136,12 @@
       try {
         await API.post(Object.assign({ password: password }, payload));
         toast(okMsg);
+        lastSig = ''; // 強制重繪，恢復被停用的按鈕
         await load();
       } catch (e) {
         $('err').textContent = e.message;
+        lastSig = '';
+        load();
       } finally {
         busy = false;
       }
