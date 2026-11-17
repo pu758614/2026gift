@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>交換禮物 — 大螢幕</title>
-  <link rel="stylesheet" href="assets/style.css?v=6">
+  <link rel="stylesheet" href="assets/style.css?v=10">
 </head>
 <body>
   <main class="display">
@@ -14,16 +14,20 @@
       <div class="toolbar">
         <div class="seg">
           <button class="small active" data-mode="all" title="快捷鍵 A">全部顯示</button>
-          <button class="small" data-mode="carousel" title="快捷鍵 C">輪播</button>
+          <button class="small" data-mode="carousel" title="快捷鍵 C">動態展示</button>
         </div>
-        <label>每張 <input type="number" id="secInput" min="2" max="60"> 秒</label>
+        <label title="動態展示中每份禮物放大停留的秒數">焦點 <input type="number" id="secInput" min="2" max="60"> 秒</label>
         <button class="small ghost" id="qrBtn" title="快捷鍵 Q">QR code</button>
         <button class="small ghost" id="fsBtn" title="快捷鍵 F">全螢幕</button>
       </div>
     </header>
 
     <section class="grid" id="grid"><div class="empty">載入中…</div></section>
-    <section class="carousel" id="carousel" hidden></section>
+    <section class="carousel" id="carousel" hidden>
+      <canvas class="snow" id="snow"></canvas>
+      <div class="marquee" id="marquee"></div>
+      <div class="spot" id="spot"></div>
+    </section>
   </main>
 
   <div class="qr-box" id="qrBox">
@@ -44,8 +48,6 @@
     var lastRevealAt = 0;
     var lastResetAt = 0;
     var mode = 'all';
-    var carouselIdx = 0;
-    var carouselTimer = null;
     var carouselSec = cfg.CAROUSEL_SEC || 6;
     var lastSig = '';
     var revealOpen = false;
@@ -87,7 +89,7 @@
         return '<li class="' + (fake ? 'fake' : '') + '">' + escapeHtml(w) + '</li>';
       }).join('');
       var owner = g.revealed ? '<div class="owner">🎅 ' + escapeHtml(g.name) + ' 的禮物</div>' : '';
-      return '<article class="gift-card ' + (g.revealed ? 'revealed ' : '') + (extraClass || '') + '">' +
+      return '<article class="gift-card ' + (g.revealed ? 'revealed ' : '') + (extraClass || '') + '" data-id="' + g.id + '">' +
         '<div class="no">禮物 #' + g.id + '</div><ul>' + words + '</ul>' + owner + '</article>';
     }
 
@@ -167,8 +169,9 @@
         gridEl.innerHTML = '<div class="empty">還沒有人填寫喔～<br>掃描右下角 QR code 開始吧！</div>';
         return;
       }
+      // 排隊等著飛進來的禮物先隱藏，飛到位後才顯示
       gridEl.innerHTML = gifts.map(function (g) {
-        return cardHtml(g, seen.has(g.id) ? '' : 'new');
+        return cardHtml(g, pending.has(g.id) ? 'landing' : '');
       }).join('');
       fitGrid();
     }
@@ -178,19 +181,318 @@
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(function () {
         if (qrState === 1) drawQr();
-        fitGrid();
+        if (mode === 'all') fitGrid(); else { buildMarquee(); sizeSnow(); }
       }, 150);
     });
 
-    function renderCarousel(animate) {
-      if (!gifts.length) {
-        carEl.innerHTML = '<div class="empty">還沒有人填寫喔～</div>';
+    /* ---------- 動態展示：跑馬燈禮物牆（← → 可手動放大某份禮物） ---------- */
+    var marqueeEl = document.getElementById('marquee');
+    var spotEl = document.getElementById('spot');
+    var MQ_SPEED = 45;          // 跑馬燈速度（px/秒）
+    var FRESH_SEC = 90;         // 新禮物在牆上發光標示 NEW 的秒數（至少跑完一圈，確保會經過畫面）
+    var spotIdx = -1, spotTimer = null;
+    var freshAt = {};           // 禮物 id → 飛進來的時間
+    var mqShown = {};           // 目前在禮物牆上的禮物：id → JSON（用來判斷要不要局部更新）
+    var reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function wantRows(n) {
+      var H = window.innerHeight - carEl.getBoundingClientRect().top - 24;
+      return Math.min(n, H > 640 ? 3 : 2);
+    }
+    function trackAnim(t) { return t.getAnimations && t.getAnimations()[0]; }
+    function trackX(t) { return new DOMMatrix(getComputedStyle(t).transform).m41; }
+    // 把某一列移到指定的位移（px），換算成動畫時間
+    function setTrackX(t, x) {
+      var a = trackAnim(t);
+      if (!a) return;
+      var half = Number(t.dataset.half);
+      var p = -x / half;
+      if (t.dataset.dir === 'reverse') p = 1 - p;
+      p = ((p % 1) + 1) % 1;
+      a.currentTime = p * a.effect.getComputedTiming().duration;
+    }
+
+    function buildMarquee() {
+      // 已經在牆上或排隊飛入中的不放進來，等輪到時再插入
+      var list0 = gifts.filter(function (g) { return !pending.has(g.id); });
+      mqShown = {};
+      if (!list0.length) {
+        marqueeEl.innerHTML = gifts.length ? '' : '<div class="empty">還沒有人填寫喔～<br>掃描右下角 QR code 開始吧！</div>';
         return;
       }
-      carouselIdx = ((carouselIdx % gifts.length) + gifts.length) % gifts.length;
-      carEl.innerHTML = cardHtml(gifts[carouselIdx], animate ? 'slide' : '') +
-        '<div class="progress">' + (carouselIdx + 1) + ' / ' + gifts.length + '</div>';
+      var H = window.innerHeight - carEl.getBoundingClientRect().top - 24;
+      var W = carEl.clientWidth || window.innerWidth;
+      var rows = wantRows(list0.length);
+      var gap = W > 1200 ? 22 : 14;
+      var rh = Math.floor((H - gap * (rows - 1)) / rows);
+      var cw = Math.round(rh * 1.3);
+      // 預留公佈後「主人名字」那一行的高度，之後局部更新也不會溢出
+      var u = Math.max(12, Math.min(40, (rh - 30) / 8.4));
+      var s = marqueeEl.style;
+      s.setProperty('--mq-gap', gap + 'px');
+      s.setProperty('--mq-w', cw + 'px');
+      s.setProperty('--mq-h', rh + 'px');
+      s.setProperty('--word-size', u + 'px');
+      s.setProperty('--no-size', Math.max(12, u * .72) + 'px');
+      s.setProperty('--pad', Math.max(10, u * .7) + 'px');
+
+      // 記下每列目前播放到哪裡，重建後接續，避免整排跳動
+      var progress = Array.prototype.map.call(marqueeEl.querySelectorAll('.mq-track'), function (t) {
+        var a = trackAnim(t);
+        if (!a) return null;
+        var d = a.effect.getComputedTiming().duration;
+        return d ? (a.currentTime % d) / d : null;
+      });
+
+      var html = '';
+      for (var r = 0; r < rows; r++) {
+        var list = list0.filter(function (g, i) { return i % rows === r; });
+        var k = Math.max(1, Math.ceil(W / (list.length * (cw + gap)))); // 份數少時重複，確保塞滿一整排
+        var one = '';
+        for (var j = 0; j < k; j++) one += list.map(function (g) { return cardHtml(g, ''); }).join('');
+        var half = list.length * k * (cw + gap);
+        var dur = half / MQ_SPEED;
+        html += '<div class="mq-row"><div class="mq-track" data-n="' + list.length * k + '" data-half="' + half + '"' +
+          ' data-dir="' + (r % 2 ? 'reverse' : 'normal') + '"' +
+          ' style="--mq-shift:-' + half + 'px;animation-duration:' + dur.toFixed(2) + 's;animation-direction:' + (r % 2 ? 'reverse' : 'normal') + '">' +
+          one + one + '</div></div>';
+      }
+      marqueeEl.innerHTML = html;
+      list0.forEach(function (g) { mqShown[g.id] = JSON.stringify(g); });
+
+      // 新禮物：卡片發光並掛上 NEW，用負的 delay 讓重建後動畫接續
+      var now = Date.now();
+      marqueeEl.querySelectorAll('.gift-card').forEach(function (c) {
+        var t = freshAt[c.dataset.id];
+        var elapsed = t ? (now - t) / 1000 : Infinity;
+        if (elapsed >= FRESH_SEC) return;
+        c.classList.add('fresh');
+        c.style.setProperty('--fresh-delay', -elapsed + 's');
+      });
+
+      marqueeEl.querySelectorAll('.mq-track').forEach(function (t, i) {
+        var a = trackAnim(t);
+        var p = progress[i] != null ? progress[i] : (i * .37) % 1; // 各列錯開起點
+        if (a) a.currentTime = p * a.effect.getComputedTiming().duration;
+      });
     }
+
+    // 已在牆上的禮物內容改變（例如被公佈）：只換掉那幾張卡片
+    function patchMarqueeCard(g) {
+      marqueeEl.querySelectorAll('.gift-card[data-id="' + g.id + '"]').forEach(function (old) {
+        var tmp = document.createElement('div');
+        tmp.innerHTML = cardHtml(g, '');
+        var el = tmp.firstChild;
+        if (old.classList.contains('fresh')) el.classList.add('fresh');
+        el.setAttribute('style', old.getAttribute('style') || '');
+        old.replaceWith(el);
+      });
+      mqShown[g.id] = JSON.stringify(g);
+    }
+
+    function updateMarquee() {
+      var ids = gifts.map(function (g) { return g.id; });
+      var removed = Object.keys(mqShown).some(function (id) { return ids.indexOf(Number(id)) === -1; });
+      if (removed || !marqueeEl.querySelector('.mq-track')) return buildMarquee();
+      gifts.forEach(function (g) {
+        if (pending.has(g.id)) return;
+        var j = JSON.stringify(g);
+        if (mqShown[g.id] === undefined) buildMarquee();   // 不該發生：保險起見重建
+        else if (mqShown[g.id] !== j) patchMarqueeCard(g);
+      });
+    }
+
+    // 在畫面中央附近的位置讓出空位，插入新卡片；回傳看得到的那張（尚未顯示）
+    function insertMarqueeCard(g) {
+      var tracks = Array.prototype.slice.call(marqueeEl.querySelectorAll('.mq-track'));
+      var shownCount = Object.keys(mqShown).length + 1;
+      if (!tracks.length || tracks.length < wantRows(shownCount)) {
+        // 禮物還很少（列數會變）：直接重建，再挑最靠近中央的那張當降落點
+        pending.delete(g.id);
+        buildMarquee();
+        pending.add(g.id);
+        var copies = marqueeEl.querySelectorAll('.gift-card[data-id="' + g.id + '"]');
+        copies.forEach(function (c) { c.classList.add('landing'); });
+        return nearestCenter(copies);
+      }
+      // 插到卡片最少的那一列
+      var t = tracks.reduce(function (a, b) { return Number(b.dataset.n) < Number(a.dataset.n) ? b : a; });
+      var n = Number(t.dataset.n);
+      var cards = t.children;
+      var slot = parseFloat(marqueeEl.style.getPropertyValue('--mq-w')) + parseFloat(marqueeEl.style.getPropertyValue('--mq-gap'));
+      var ref = nearestCenter(Array.prototype.slice.call(cards));
+      var v = Array.prototype.indexOf.call(cards, ref);
+      var other = cards[v < n ? v + n : v - n];
+      var x = trackX(t);
+
+      var tmp = document.createElement('div');
+      tmp.innerHTML = cardHtml(g, '');
+      var hidden = tmp.firstChild;               // 另一半的分身：直接全寬插入（在畫面外）
+      tmp.innerHTML = cardHtml(g, 'landing opening');
+      var seenCopy = tmp.firstChild;             // 看得到的那張：從 0 寬慢慢撐開
+      other.before(hidden);
+      ref.before(seenCopy);
+      if (v >= n) x -= slot;                     // 分身插在前面那一半，補償位移避免整排跳
+
+      var half = (n + 1) * slot;
+      t.dataset.n = n + 1;
+      t.dataset.half = half;
+      t.style.setProperty('--mq-shift', -half + 'px');
+      t.style.animationDuration = (half / MQ_SPEED).toFixed(2) + 's';
+      setTrackX(t, x);
+      mqShown[g.id] = JSON.stringify(g);
+      return seenCopy;
+    }
+
+    function nearestCenter(els) {
+      var cx = window.innerWidth / 2, best = null, bd = Infinity;
+      Array.prototype.forEach.call(els, function (el) {
+        var r = el.getBoundingClientRect();
+        var d = Math.abs(r.left + r.width / 2 - cx);
+        if (d < bd) { bd = d; best = el; }
+      });
+      return best;
+    }
+
+    /* ---------- 新禮物飛入動畫：從 QR code 飛出 → 中央放大 → 飛進牆上的空位 ---------- */
+    var pending = new Set();    // 排隊或飛行中的禮物 id
+    var flyQueue = [];
+    var flyBusy = false;
+    var FLY_MS = 2800;
+
+    function enqueueFly(g) {
+      if (pending.has(g.id)) return;
+      pending.add(g.id);
+      flyQueue.push(g.id);
+      if (!flyBusy) setTimeout(nextFly, 300);
+    }
+
+    function nextFly() {
+      var id = flyQueue.shift();
+      if (id == null) { flyBusy = false; return; }
+      flyBusy = true;
+      var g = gifts.find(function (x) { return x.id === id; });
+      if (!g) { pending.delete(id); return nextFly(); }       // 已被刪除
+      var container = mode === 'all' ? gridEl : marqueeEl;
+      var target = mode === 'all'
+        ? gridEl.querySelector('.gift-card[data-id="' + id + '"]')
+        : insertMarqueeCard(g);
+      if (!target || reduceMotion) { land(g, container); return setTimeout(nextFly, 200); }
+
+      var r = target.getBoundingClientRect();
+      var w = mode === 'all' ? r.width : parseFloat(marqueeEl.style.getPropertyValue('--mq-w'));
+      var h = mode === 'all' ? r.height : parseFloat(marqueeEl.style.getPropertyValue('--mq-h'));
+      // 跑馬燈會在飛行期間繼續移動，預估降落時的位置
+      var drift = 0;
+      if (mode !== 'all') {
+        var t = target.parentElement;
+        drift = (t.dataset.dir === 'reverse' ? 1 : -1) * MQ_SPEED * FLY_MS / 1000;
+      }
+      var L = r.left + drift, T = r.top;
+
+      var tmp = document.createElement('div');
+      tmp.innerHTML = cardHtml(g, 'flyer fresh');
+      var fly = tmp.firstChild;
+      var cs = getComputedStyle(container);
+      ['--word-size', '--no-size', '--pad'].forEach(function (v) { fly.style.setProperty(v, cs.getPropertyValue(v)); });
+      fly.style.cssText += ';left:' + L + 'px;top:' + T + 'px;width:' + w + 'px;height:' + h + 'px';
+      document.body.appendChild(fly);
+
+      var q = qrState !== 2 ? qrBox.getBoundingClientRect() : { left: innerWidth / 2, top: innerHeight, width: 0, height: 0 };
+      var cx = innerWidth / 2 - (L + w / 2), cy = innerHeight / 2 - (T + h / 2);
+      var qx = q.left + q.width / 2 - (L + w / 2), qy = q.top + q.height / 2 - (T + h / 2);
+      var S = Math.min(2.2, innerWidth * .42 / w, innerHeight * .5 / h);
+      var tf = function (x, y, s, rot) { return 'translate(' + x + 'px,' + y + 'px) scale(' + s + ') rotate(' + rot + 'deg)'; };
+
+      document.body.classList.add('flying');
+      var anim = fly.animate([
+        { transform: tf(qx, qy, .15, -25), opacity: 0, easing: 'cubic-bezier(.2,.8,.3,1.15)' },
+        { transform: tf(cx, cy, S, 3), opacity: 1, offset: .3 },
+        { transform: tf(cx, cy, S, 0), opacity: 1, offset: .62, easing: 'cubic-bezier(.55,0,.25,1)' },
+        { transform: tf(0, 0, 1, 0), opacity: 1 }
+      ], { duration: FLY_MS, fill: 'both' });
+      setTimeout(function () { document.body.classList.remove('flying'); }, FLY_MS * .62);
+      anim.onfinish = function () {
+        fly.remove();
+        land(g, container);
+        setTimeout(nextFly, 500);
+      };
+    }
+
+    // 降落：顯示牆上的卡片並開始發光
+    function land(g, container) {
+      pending.delete(g.id);
+      freshAt[g.id] = Date.now();
+      var els = container.querySelectorAll('.gift-card[data-id="' + g.id + '"]');
+      if (!els.length) { if (mode === 'all') renderGrid(); else buildMarquee(); return; }
+      els.forEach(function (el) {
+        el.classList.remove('landing', 'opening');
+        if (container === marqueeEl) {
+          el.classList.add('fresh');
+          el.style.setProperty('--fresh-delay', '0s');
+        } else {
+          el.classList.add('landed');
+        }
+      });
+    }
+
+    function spotCard(g) {
+      var n = gifts.indexOf(g) + 1;
+      return cardHtml(g, 'spot-card') +
+        '<div class="spot-meta"><span>' + n + ' / ' + gifts.length + '</span>' +
+        '<span class="spot-bar"><i style="animation-duration:' + carouselSec + 's"></i></span></div>';
+    }
+
+    // 只在主持人按 ← → 時放大一份禮物，停留後自動收起，不會接著跳下一份
+    function showSpot(step) {
+      clearTimeout(spotTimer);
+      if (mode !== 'carousel' || !gifts.length || revealOpen) return;
+      spotIdx = (((spotIdx + (step || 1)) % gifts.length) + gifts.length) % gifts.length;
+      spotEl.innerHTML = spotCard(gifts[spotIdx]);
+      spotEl.className = 'spot show';
+      carEl.classList.add('spotting');
+      spotTimer = setTimeout(hideSpot, carouselSec * 1000);
+    }
+
+    function hideSpot() {
+      clearTimeout(spotTimer);
+      if (!spotEl.classList.contains('show')) return;
+      spotEl.className = 'spot hide';
+      carEl.classList.remove('spotting');
+    }
+
+    /* 背景飄雪 */
+    var snowCv = document.getElementById('snow');
+    var snowRunning = false, flakes = [];
+    function sizeSnow() {
+      snowCv.width = carEl.clientWidth;
+      snowCv.height = carEl.clientHeight;
+    }
+    function startSnow() {
+      if (snowRunning || reduceMotion) return;
+      snowRunning = true;
+      sizeSnow();
+      var ctx = snowCv.getContext('2d');
+      flakes = [];
+      for (var i = 0; i < 90; i++) {
+        flakes.push({ x: Math.random(), y: Math.random(), r: Math.random() * 2.5 + 1, v: Math.random() * .4 + .2, d: Math.random() * Math.PI * 2 });
+      }
+      (function frame() {
+        if (!snowRunning) return ctx.clearRect(0, 0, snowCv.width, snowCv.height);
+        var w = snowCv.width, h = snowCv.height;
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = 'rgba(255,255,255,.55)';
+        flakes.forEach(function (f) {
+          f.y += f.v / h * 1.6; f.d += .01;
+          if (f.y > 1.02) { f.y = -.02; f.x = Math.random(); }
+          ctx.beginPath();
+          ctx.arc((f.x + Math.sin(f.d) * .01) * w, f.y * h, f.r, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        requestAnimationFrame(frame);
+      })();
+    }
+    function stopSnow() { snowRunning = false; }
 
     function render(force) {
       if (firstLoad) return;
@@ -198,7 +500,11 @@
       var sig = JSON.stringify(gifts);
       if (!force && sig === lastSig) return;
       lastSig = sig;
-      if (mode === 'all') renderGrid(); else renderCarousel(false);
+      // 剛送出的禮物排隊飛進來
+      gifts.forEach(function (g) { if (!seen.has(g.id)) enqueueFly(g); });
+      if (mode === 'all') renderGrid();
+      else if (force) buildMarquee();
+      else updateMarquee();
       gifts.forEach(function (g) { seen.add(g.id); });
     }
 
@@ -215,13 +521,11 @@
     }
 
     function restartCarousel() {
-      clearInterval(carouselTimer);
-      if (mode !== 'carousel') return;
-      carouselTimer = setInterval(function () {
-        if (revealOpen) return;
-        carouselIdx++;
-        renderCarousel(true);
-      }, carouselSec * 1000);
+      clearTimeout(spotTimer);
+      spotEl.className = 'spot';
+      carEl.classList.remove('spotting');
+      if (mode !== 'carousel') { stopSnow(); return; }
+      startSnow();
     }
 
     document.querySelectorAll('.seg button').forEach(function (b) {
@@ -250,9 +554,7 @@
       else if (k === 'h') document.body.classList.toggle('hide-ui');
       else if (k === 'escape' && revealOpen) closeReveal();
       else if (mode === 'carousel' && (k === 'arrowright' || k === 'arrowleft')) {
-        carouselIdx += k === 'arrowright' ? 1 : -1;
-        renderCarousel(true);
-        restartCarousel();
+        showSpot(k === 'arrowright' ? 1 : -1);
       }
     });
 

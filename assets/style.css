@@ -167,17 +167,80 @@ body.hide-ui .toolbar:hover { opacity: 1; }
 .empty { text-align: center; margin: auto; color: #cfe3d6; font-size: clamp(20px, 2.4vw, 36px); }
 .grid .empty { grid-column: 1 / -1; margin-top: 22vh; }
 
-.carousel { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 20px; }
-.carousel .gift-card {
-  width: min(1100px, 90vw); max-height: calc(100vh - 170px);
+/* 動態展示：跑馬燈禮物牆 */
+.carousel { flex: 1; position: relative; overflow: hidden; margin: 0 -28px -24px; min-height: 300px; }
+.carousel .snow { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+.marquee {
+  position: absolute; inset: 0 0 24px; z-index: 1;
+  display: flex; flex-direction: column; justify-content: center; gap: var(--mq-gap, 18px);
+  transition: opacity .7s, transform .7s;
+}
+.carousel.spotting .marquee { opacity: .28; transform: scale(.97); }
+.mq-row { width: 100%; }
+.mq-track { display: flex; width: max-content; animation: mq-scroll linear infinite; will-change: transform; }
+.mq-track .gift-card { flex: none; width: var(--mq-w); height: var(--mq-h); margin-right: var(--mq-gap, 18px); }
+.marquee .empty { margin: auto; }
+@keyframes mq-scroll { from { transform: translateX(0); } to { transform: translateX(var(--mq-shift, -50%)); } }
+
+/* 新禮物飛入 */
+.gift-card.landing { opacity: 0; }
+.mq-track .gift-card.opening { animation: slot-open .9s ease-in-out 1.1s both; }
+@keyframes slot-open {
+  from { width: 0; margin-right: 0; padding-left: 0; padding-right: 0; }
+  to   { width: var(--mq-w); margin-right: var(--mq-gap, 18px); padding-left: var(--pad, 18px); padding-right: var(--pad, 18px); }
+}
+.gift-card.flyer {
+  position: fixed; margin: 0; z-index: 15; pointer-events: none;
+  transform-origin: center;
+  box-shadow: 0 0 0 5px var(--gold), 0 0 60px rgba(242, 193, 78, .7), 0 30px 80px rgba(0,0,0,.6);
+}
+.grid .gift-card { transition: opacity .5s; }
+body.flying .grid .gift-card, body.flying .marquee { opacity: .3; }
+.grid .gift-card.landed { animation: landed .6s cubic-bezier(.2, .9, .3, 1.6); box-shadow: 0 0 0 4px var(--gold), 0 8px 22px rgba(0,0,0,.35); }
+@keyframes landed { from { transform: scale(1.12); } to { transform: none; } }
+
+/* 焦點卡片 */
+.spot {
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+  pointer-events: none; opacity: 0;
+}
+.spot.show { opacity: 1; }
+.spot.hide { opacity: 0; transition: opacity .5s; }
+.spot .gift-card {
+  width: min(1000px, 84vw); max-height: calc(100% - 110px);
   padding: clamp(24px, 5vh, 56px) clamp(28px, 4vw, 64px);
-  --word-size: clamp(30px, min(6vw, 9vh), 96px); --no-size: clamp(22px, min(3vw, 4.5vh), 48px);
+  --word-size: clamp(30px, min(5.5vw, 8.5vh), 92px); --no-size: clamp(22px, min(2.8vw, 4.2vh), 46px);
+  box-shadow: 0 0 0 6px var(--gold), 0 0 70px rgba(242, 193, 78, .45), 0 30px 80px rgba(0,0,0,.6);
 }
+.spot.show .gift-card { animation: spot-in .9s cubic-bezier(.2, .9, .3, 1.25) both; }
+.spot.show .gift-card li { animation: word-in .5s ease-out both; }
+.spot.show .gift-card li:nth-child(1) { animation-delay: .45s; }
+.spot.show .gift-card li:nth-child(2) { animation-delay: .6s; }
+.spot.show .gift-card li:nth-child(3) { animation-delay: .75s; }
 @media (min-width: 900px) {
-  body.qr-small .carousel .gift-card { width: min(1100px, calc(100vw - 480px)); }
+  body.qr-small .spot .gift-card { width: min(1000px, calc(100vw - 480px)); }
 }
-.carousel .gift-card.slide { animation: slide-in .6s ease-out both; }
-.carousel .progress { color: #cfe3d6; font-size: 20px; }
+/* 禮物牆上的新禮物：發光 90 秒並標示 NEW（與 display.html 的 FRESH_SEC 一致） */
+.mq-track .gift-card.fresh { animation: fresh-pulse 1.5s ease-in-out var(--fresh-delay, 0s) 60 alternate; }
+.mq-track .gift-card.fresh::after {
+  content: "NEW"; position: absolute; top: calc(var(--pad, 16px) * .6); right: calc(var(--pad, 16px) * .6);
+  background: var(--gold); color: var(--ink); font-weight: 900; font-size: calc(var(--no-size, 18px) * .8);
+  padding: 2px 10px; border-radius: 99px; letter-spacing: .05em;
+  animation: fresh-badge 90s linear var(--fresh-delay, 0s) forwards;
+}
+@keyframes fresh-pulse {
+  from { box-shadow: 0 0 0 4px var(--gold), 0 0 36px rgba(242, 193, 78, .85); }
+  to   { box-shadow: 0 0 0 4px var(--gold), 0 0 10px rgba(242, 193, 78, .3); }
+}
+@keyframes fresh-badge { 0%, 98% { opacity: 1; } 100% { opacity: 0; } }
+.spot-meta { display: flex; align-items: center; gap: 14px; color: #cfe3d6; font-size: clamp(16px, 1.4vw, 22px); font-weight: 700; }
+.spot-bar { width: 220px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.15); overflow: hidden; }
+.spot-bar i { display: block; height: 100%; background: var(--gold); transform-origin: left; animation: bar-fill linear both; }
+
+@keyframes spot-in { from { opacity: 0; transform: translateY(60px) scale(.4) rotate(-6deg); } to { opacity: 1; transform: none; } }
+@keyframes word-in { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: none; } }
+@keyframes bar-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 
 .qr-box {
   position: fixed; right: 20px; bottom: 20px;
@@ -293,4 +356,5 @@ td.actions button + button { margin-left: 6px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01s !important; animation-delay: 0s !important; }
+  .mq-track { animation: none !important; }
 }
