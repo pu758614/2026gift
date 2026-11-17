@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Serif+TC:wght@700;900&display=swap">
-  <link rel="stylesheet" href="assets/style.css?v=16">
+  <link rel="stylesheet" href="assets/style.css?v=18">
 </head>
 <body>
   <main class="display">
@@ -515,6 +515,114 @@
       render(true);
     }
 
+    /* ---------- 模式切換動畫：每張卡片從舊位置滑行、縮放到新位置 ---------- */
+    var MORPH_MS = 950;
+    var morphing = false;
+
+    // 收集容器裡每份禮物的卡片位置（同一份可能有多張分身）
+    function cardRects(container) {
+      var map = {};
+      container.querySelectorAll('.gift-card[data-id]').forEach(function (el) {
+        if (el.classList.contains('landing')) return;
+        var r = el.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) return;
+        (map[el.dataset.id] = map[el.dataset.id] || []).push({ el: el, r: r });
+      });
+      return map;
+    }
+    function onScreen(r) { return r.right > 0 && r.left < innerWidth && r.bottom > 0 && r.top < innerHeight; }
+    function nearest(list, r) {
+      var cx = r.left + r.width / 2, cy = r.top + r.height / 2, best = list[0], bd = Infinity;
+      list.forEach(function (it) {
+        var d = Math.hypot(it.r.left + it.r.width / 2 - cx, it.r.top + it.r.height / 2 - cy);
+        if (d < bd) { bd = d; best = it; }
+      });
+      return best;
+    }
+
+    function switchMode(m) {
+      if (m === mode) return;
+      if (morphing || firstLoad || reduceMotion || !gifts.length) return setMode(m);
+      var fromEl = mode === 'all' ? gridEl : marqueeEl;
+      var toEl = m === 'all' ? gridEl : marqueeEl;
+      var from = cardRects(fromEl);
+
+      setMode(m);                                    // 在背後排好新版面
+      var tracks = marqueeEl.querySelectorAll('.mq-track');
+      tracks.forEach(function (t) { t.style.animationPlayState = 'paused'; }); // 目標位置先固定
+      var to = cardRects(toEl);
+      toEl.classList.add('morph-hide');
+      morphing = true;
+
+      // 配對：每個「畫面上看得到的目標」都要有一張分身飛過去；
+      // 格狀 → 跑馬燈：一張分裂到多個位置；跑馬燈 → 格狀：畫面上的多張匯聚到同一格
+      var pairs = [];
+      Object.keys(to).forEach(function (id) {
+        var targets = to[id].filter(function (t) { return onScreen(t.r); });
+        var sources = (from[id] || []).filter(function (s) { return onScreen(s.r); });
+        if (!targets.length) {
+          // 目標都在畫面外（跑馬燈還沒流到的位置）：畫面上的卡片往最近的那個位置滑出去，不要憑空消失
+          if (!sources.length) return;
+          sources.forEach(function (s) { pairs.push({ id: id, src: s.r, tgt: nearest(to[id], s.r) }); });
+          return;
+        }
+        if (m === 'carousel') {
+          targets.forEach(function (t) {
+            var s = sources.length ? nearest(sources, t.r) : (from[id] ? nearest(from[id], t.r) : null);
+            pairs.push({ id: id, src: s && s.r, tgt: t });
+          });
+        } else {
+          var t = targets[0];
+          if (!sources.length && from[id]) sources = [nearest(from[id], t.r)];
+          if (!sources.length) pairs.push({ id: id, src: null, tgt: t });
+          sources.forEach(function (s) { pairs.push({ id: id, src: s.r, tgt: t }); });
+        }
+      });
+      // 由左上往右下依序出發，形成波浪
+      pairs.sort(function (a, b) { return (a.tgt.r.top - b.tgt.r.top) * 2 + (a.tgt.r.left - b.tgt.r.left); });
+
+      var cs = getComputedStyle(toEl);
+      var vars = ['--word-size', '--no-size', '--pad', '--fresh-delay'];
+      var layer = document.createElement('div');
+      layer.className = 'morph-layer';
+      document.body.appendChild(layer);
+      var stagger = Math.min(18, 380 / Math.max(1, pairs.length));
+
+      var anims = pairs.map(function (p, i) {
+        var el = p.tgt.el.cloneNode(true);
+        el.classList.remove('landing', 'opening', 'landed', 'new');
+        el.classList.add('morph');
+        vars.forEach(function (v) { var val = cs.getPropertyValue(v); if (val) el.style.setProperty(v, val); });
+        var r = p.tgt.r;
+        el.style.left = r.left + 'px'; el.style.top = r.top + 'px';
+        el.style.width = r.width + 'px'; el.style.height = r.height + 'px';
+        layer.appendChild(el);
+        var start;
+        if (p.src) {
+          var s = Math.sqrt((p.src.width / r.width) * (p.src.height / r.height));
+          start = { transform: 'translate(' + (p.src.left - r.left) + 'px,' + (p.src.top - r.top) + 'px) scale(' + s + ')', opacity: 1 };
+        } else {
+          start = { transform: 'translate(0, 40px) scale(.6)', opacity: 0 };
+        }
+        return el.animate([start, { transform: 'none', opacity: 1 }], {
+          duration: MORPH_MS, delay: i * stagger, easing: 'cubic-bezier(.65, 0, .35, 1)', fill: 'both'
+        }).finished;
+      });
+
+      Promise.all(anims).then(finish, finish);
+      function finish() {
+        if (!morphing) return;
+        morphing = false;
+        // 新版面瞬間顯示（不要淡入），分身剛好疊在同樣位置，所以看起來無縫
+        toEl.style.transition = 'none';
+        toEl.classList.remove('morph-hide');
+        void toEl.offsetWidth;
+        toEl.style.transition = '';
+        layer.remove();
+        marqueeEl.querySelectorAll('.mq-track').forEach(function (t) { t.style.animationPlayState = ''; });
+      }
+    }
+
     function restartCarousel() {
       clearTimeout(spotTimer);
       spotEl.className = 'spot';
@@ -535,12 +643,14 @@
     }
 
     // 套用後台的顯示設定；只在後台改變時才套用，所以現場按 A / C 臨時切換仍有效
-    function applyDisplaySettings(st) {
+    function applyDisplaySettings(st, instant) {
       var sig = (st.displayMode || '') + '|' + (st.speed || '');
       if (sig === lastDisplaySig) return;
       lastDisplaySig = sig;
       if (st.speed) setSpeed(st.speed);
-      if ((st.displayMode === 'all' || st.displayMode === 'carousel') && st.displayMode !== mode) setMode(st.displayMode);
+      if ((st.displayMode === 'all' || st.displayMode === 'carousel') && st.displayMode !== mode) {
+        if (instant) setMode(st.displayMode); else switchMode(st.displayMode);   // 剛打開頁面時直接切，不播動畫
+      }
     }
 
     function toggleFullscreen() {
@@ -552,8 +662,8 @@
     document.addEventListener('keydown', function (e) {
       if (e.target.tagName === 'INPUT') return;
       var k = e.key.toLowerCase();
-      if (k === 'a') setMode('all');
-      else if (k === 'c') setMode('carousel');
+      if (k === 'a') switchMode('all');
+      else if (k === 'c') switchMode('carousel');
       else if (k === 'q') cycleQr();
       else if (k === 'f') toggleFullscreen();
       else if (k === 'h') document.body.classList.toggle('hide-ui');
@@ -645,7 +755,7 @@
           gifts.forEach(function (g) { seen.add(g.id); });
           firstLoad = false;
           render(true);
-          applyDisplaySettings(st);
+          applyDisplaySettings(st, true);
         } else {
           applyDisplaySettings(st);
           render(false);
