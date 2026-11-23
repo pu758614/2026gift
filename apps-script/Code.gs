@@ -12,12 +12,18 @@ var HEADERS = ['id', 'name', 'w1', 'w2', 'w3', 'fakeIndex', 'createdAt', 'reveal
 var MAX_NAME = 30;
 var MAX_WORD = 20;
 
+var VOTES_SHEET = 'Votes';
+var VOTE_HEADERS = ['nameKey', 'name', 'surprise', 'funny', 'want', 'updatedAt'];
+var CATS = ['surprise', 'funny', 'want'];      // 最驚喜、最搞笑、最想收到
+var MAX_PICKS = 3;                             // 每個獎項最多選幾份
+
 /* ---------- 入口 ---------- */
 
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) || 'public';
   try {
     if (action === 'public') return json_(publicData_());
+    if (action === 'voteOptions') return json_(voteOptions_());
     return json_({ ok: false, error: '未知的動作' });
   } catch (err) {
     return json_({ ok: false, error: String(err && err.message || err) });
@@ -38,7 +44,21 @@ function doPost(e) {
         return json_(submit_(body));
       case 'adminList':
         checkPassword_(body.password);
-        return json_({ ok: true, gifts: readGifts_(), state: readState_() });
+        return json_({ ok: true, gifts: readGifts_(), state: readState_(), votes: voteSummary_() });
+      case 'vote':
+        return json_(vote_(body));
+      case 'setVoting':
+        checkPassword_(body.password);
+        return json_(withLock_(function () {
+          writeState_({ votingOpen: !!body.open });
+          return { ok: true, state: readState_() };
+        }));
+      case 'revealResult':
+        checkPassword_(body.password);
+        return json_(withLock_(function () { return revealResult_(body.cat); }));
+      case 'clearVotes':
+        checkPassword_(body.password);
+        return json_(withLock_(clearVotes_));
       case 'delete':
         checkPassword_(body.password);
         return json_(withLock_(function () { return deleteGift_(body.id); }));
@@ -73,7 +93,162 @@ function publicData_() {
     }
     return item;
   });
-  return { ok: true, gifts: gifts, state: readState_() };
+  var state = readState_();
+  return {
+    ok: true,
+    gifts: gifts,
+    state: state,
+    voting: { open: !!state.votingOpen, voterCount: readVotes_().length }
+  };
+}
+
+/* ---------- 投票 ---------- */
+
+function voteOptions_() {
+  var state = readState_();
+  var round = state.voteRound || 0;
+  if (!state.votingOpen) return { ok: true, open: false, round: round, gifts: [] };
+  var gifts = readGifts_().map(function (g) {
+    return { id: g.id, name: g.name, words: g.words, fakeIndex: g.fakeIndex };
+  });
+  return { ok: true, open: true, round: round, gifts: gifts };
+}
+
+function vote_(body) {
+  var name = clean_(body.name, MAX_NAME);
+  if (!name) throw new Error('請填寫你的名字');
+  var picks = body.picks || {};
+
+  return withLock_(function () {
+    if (!readState_().votingOpen) throw new Error('投票目前沒有開放');
+    var ids = {};
+    readGifts_().forEach(function (g) { ids[g.id] = true; });
+
+    var row = [nameKey_(name), name];
+    CATS.forEach(function (cat) {
+      var list = (picks[cat] || []).map(Number);
+      if (!list.length) throw new Error('每個獎項至少要選 1 份禮物');
+      if (list.length > MAX_PICKS) throw new Error('每個獎項最多選 ' + MAX_PICKS + ' 份禮物');
+      var uniq = {};
+      list.forEach(function (id) {
+        if (!ids[id]) throw new Error('禮物 #' + id + ' 不存在，請重新整理頁面');
+        if (uniq[id]) throw new Error('同一個獎項不能重複選同一份禮物');
+        uniq[id] = true;
+      });
+      row.push(list.join(','));
+    });
+    row.push(new Date().toISOString());
+
+    var sheet = votesSheet_();
+    var existing = findVoteRow_(sheet, row[0]);
+    if (existing) sheet.getRange(existing, 1, 1, VOTE_HEADERS.length).setValues([row]);
+    else sheet.appendRow(row);
+    return { ok: true, updated: !!existing };
+  });
+}
+
+/** 每個獎項的即時票數（由高到低）與投票名單，給後台用 */
+function voteSummary_() {
+  var votes = readVotes_();
+  var gifts = readGifts_();
+  var tallies = {};
+  CATS.forEach(function (cat) { tallies[cat] = tally_(cat, votes, gifts); });
+  return {
+    voterCount: votes.length,
+    tallies: tallies,
+    voters: votes.map(function (v) {
+      return { name: v.name, surprise: v.surprise, funny: v.funny, want: v.want, updatedAt: v.updatedAt };
+    })
+  };
+}
+
+function tally_(cat, votes, gifts) {
+  var count = {};
+  votes.forEach(function (v) {
+    v[cat].forEach(function (id) { count[id] = (count[id] || 0) + 1; });
+  });
+  return gifts
+    .filter(function (g) { return count[g.id] > 0; })
+    .map(function (g) {
+      return { id: g.id, name: g.name, words: g.words, fakeIndex: g.fakeIndex, votes: count[g.id] };
+    })
+    .sort(function (a, b) { return b.votes - a.votes || a.id - b.id; });
+}
+
+/** 同票同名次（1、2、2、4…），只取前三名 */
+function ranking_(cat) {
+  var list = tally_(cat, readVotes_(), readGifts_());
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    var rank = (i > 0 && list[i].votes === list[i - 1].votes) ? out[i - 1].rank : i + 1;
+    if (rank > 3) break;
+    list[i].rank = rank;
+    out.push(list[i]);
+  }
+  return out;
+}
+
+function revealResult_(cat) {
+  if (CATS.indexOf(cat) === -1) throw new Error('未知的獎項');
+  var state = readState_();
+  var results = state.results || {};
+  results[cat] = ranking_(cat);
+  writeState_({ votingOpen: false, results: results, resultCat: cat, resultAt: Date.now() });
+  return { ok: true, ranking: results[cat], state: readState_() };
+}
+
+function clearVotes_() {
+  var sheet = votesSheet_();
+  var last = sheet.getLastRow();
+  if (last >= 2) sheet.deleteRows(2, last - 1);
+  // round 變了，手機上記住的舊投票就會作廢
+  writeState_({ votingOpen: false, results: {}, resultCat: null, voteRound: Date.now() });
+  return { ok: true };
+}
+
+function readVotes_() {
+  var sheet = votesSheet_();
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+  var split = function (s) {
+    return String(s).split(',').map(function (x) { return Number(x); }).filter(function (x) { return x > 0; });
+  };
+  return sheet.getRange(2, 1, last - 1, VOTE_HEADERS.length).getValues()
+    .filter(function (r) { return r[0] !== '' && r[0] !== null; })
+    .map(function (r) {
+      return {
+        nameKey: String(r[0]), name: String(r[1]),
+        surprise: split(r[2]), funny: split(r[3]), want: split(r[4]),
+        updatedAt: r[5] instanceof Date ? r[5].toISOString() : String(r[5])
+      };
+    });
+}
+
+function findVoteRow_(sheet, key) {
+  var last = sheet.getLastRow();
+  if (last < 2) return 0;
+  var keys = sheet.getRange(2, 1, last - 1, 1).getValues();
+  for (var i = 0; i < keys.length; i++) {
+    if (String(keys[i][0]) === key) return i + 2;
+  }
+  return 0;
+}
+
+function nameKey_(name) {
+  return String(name).replace(/\s+/g, '').toLowerCase();
+}
+
+function votesSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(VOTES_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(VOTES_SHEET);
+    sheet.getRange(1, 1, 1, VOTE_HEADERS.length).setValues([VOTE_HEADERS]);
+    sheet.setFrozenRows(1);
+    // 存成純文字，避免「3,7」被試算表當成數字
+    sheet.getRange('C:E').setNumberFormat('@');
+  }
+  return sheet;
 }
 
 function submit_(body) {
@@ -126,6 +301,7 @@ function resetAll_() {
   var sheet = giftsSheet_();
   var last = sheet.getLastRow();
   if (last >= 2) sheet.deleteRows(2, last - 1);
+  clearVotes_();
   writeState_({ revealId: null, revealAt: Date.now(), resetAt: Date.now() });
   return { ok: true };
 }
@@ -236,4 +412,5 @@ function json_(obj) {
 function setup() {
   giftsSheet_();
   stateSheet_();
+  votesSheet_();
 }

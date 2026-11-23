@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Serif+TC:wght@700;900&display=swap">
-  <link rel="stylesheet" href="assets/style.css?v=19">
+  <link rel="stylesheet" href="assets/style.css?v=20">
 </head>
 <body>
   <main class="display">
@@ -16,6 +16,7 @@
       <span class="count" id="count"></span>
       <div class="toolbar">
         <!-- 顯示模式與速度改由管理後台設定 -->
+        <button class="small ghost" id="soundBtn" title="開票音效（瀏覽器規定要先點一下才能出聲）">🔇 音效</button>
         <button class="small ghost" id="qrBtn" title="快捷鍵 Q">QR code</button>
         <button class="small ghost" id="fsBtn" title="快捷鍵 F">全螢幕</button>
       </div>
@@ -31,7 +32,7 @@
 
   <div class="qr-box" id="qrBox">
     <div id="qr"></div>
-    掃我填寫禮物特徵
+    <span id="qrLabel">掃我填寫禮物特徵</span>
   </div>
 
   <div class="status-dot" id="status"></div>
@@ -46,6 +47,7 @@
     var firstLoad = true;
     var lastRevealAt = 0;
     var lastResetAt = 0;
+    var lastResultAt = 0;
     var mode = 'all';
     var carouselSec = cfg.CAROUSEL_SEC || 6;     // 按 ← → 放大禮物時停留的秒數
     var speedLevel = cfg.MARQUEE_SPEED || 3;     // 動態展示移動速度 1～10（由後台設定）
@@ -63,14 +65,18 @@
 
     /* ---------- QR code ---------- */
     var formUrl = new URL('index.html', location.href).href;
+    var voteUrl = new URL('vote.html', location.href).href;
+    var votingOpen = false;     // 投票開放中：QR 改指向投票頁
     var qrBox = document.getElementById('qrBox');
     var qrState = 0; // 0 小, 1 大, 2 隱藏
     function drawQr() {
       var el = document.getElementById('qr');
+      var url = votingOpen ? voteUrl : formUrl;
+      document.getElementById('qrLabel').textContent = votingOpen ? '掃我投票 🗳️' : '掃我填寫禮物特徵';
       el.innerHTML = '';
       var size = qrState === 1 ? Math.min(window.innerWidth, window.innerHeight) * 0.6 : 150;
-      if (window.QRCode) new QRCode(el, { text: formUrl, width: size, height: size, correctLevel: QRCode.CorrectLevel.M });
-      else el.textContent = formUrl;
+      if (window.QRCode) new QRCode(el, { text: url, width: size, height: size, correctLevel: QRCode.CorrectLevel.M });
+      else el.textContent = url;
       qrBox.className = 'qr-box' + (qrState === 1 ? ' big' : '') + (qrState === 2 ? ' hidden' : '');
       document.body.classList.toggle('qr-small', qrState === 0);
     }
@@ -86,8 +92,9 @@
         return '<li class="' + (fake ? 'fake' : '') + '">' + escapeHtml(w) + '</li>';
       }).join('');
       var owner = g.revealed ? '<div class="owner">🎅 ' + escapeHtml(g.name) + ' 的禮物</div>' : '';
+      var stamp = g.revealed ? '<span class="stamp">已送出</span>' : '';
       return '<article class="gift-card ' + (g.revealed ? 'revealed ' : '') + (extraClass || '') + '" data-id="' + g.id + '">' +
-        '<div class="no">禮物 #' + g.id + '</div><ul>' + words + '</ul>' + owner + '</article>';
+        '<div class="no">禮物 #' + g.id + '</div><ul>' + words + '</ul>' + owner + stamp + '</article>';
     }
 
     /* 依可用空間算出最佳欄數與字級，讓卡片填滿整個螢幕 */
@@ -699,6 +706,7 @@
       else if (k === 'q') cycleQr();
       else if (k === 'f') toggleFullscreen();
       else if (k === 'h') document.body.classList.toggle('hide-ui');
+      else if (k === 'escape' && awardEl) closeAward();
       else if (k === 'escape' && revealOpen) closeReveal();
       else if (mode === 'carousel' && (k === 'arrowright' || k === 'arrowleft')) {
         showSpot(k === 'arrowright' ? 1 : -1);
@@ -771,6 +779,246 @@
       return function () { running = false; };
     }
 
+    /* ---------- 音效：Web Audio 即時合成，不需要音檔 ---------- */
+    var actx = null, soundOn = false, noiseBuf = null, bus = null;
+    var soundBtn = document.getElementById('soundBtn');
+    try { soundOn = localStorage.getItem('display_sound') === '1'; } catch (e) {}
+
+    function ensureAudio() {
+      if (!actx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        noiseBuf = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+        var d = noiseBuf.getChannelData(0);
+        for (var i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      }
+      if (actx.state === 'suspended') actx.resume();
+      return actx;
+    }
+    function soundReady() {
+      var ok = !!(soundOn && actx && actx.state === 'running');
+      if (ok && !bus) newBus();
+      return ok;
+    }
+    function updateSoundBtn() {
+      var on = soundOn && actx && actx.state === 'running';
+      soundBtn.textContent = on ? '🔊 音效' : '🔇 音效';
+      soundBtn.classList.toggle('on', !!on);
+    }
+    soundBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      soundOn = !soundOn;
+      try { localStorage.setItem('display_sound', soundOn ? '1' : '0'); } catch (err) {}
+      if (soundOn && ensureAudio()) {
+        actx.resume().then(function () { updateSoundBtn(); newBus(); brass([523, 659, 784], actx.currentTime + .05, .35, .12); });
+      }
+      updateSoundBtn();
+    });
+    // 之前開過音效：畫面上任何一次點擊或按鍵就自動啟用（瀏覽器規定）
+    ['click', 'keydown'].forEach(function (ev) {
+      document.addEventListener(ev, function () {
+        if (soundOn && ensureAudio()) actx.resume().then(updateSoundBtn);
+      });
+    });
+    updateSoundBtn();
+
+    // 每場開票一條總線，關閉時整條靜音，排程中的聲音也一起停
+    function newBus() {
+      if (!actx) return null;
+      if (bus) { try { bus.disconnect(); } catch (e) {} }
+      bus = actx.createGain();
+      bus.gain.value = .9;
+      bus.connect(actx.destination);
+      return bus;
+    }
+    function muteBus() {
+      if (!bus || !actx) return;
+      bus.gain.setTargetAtTime(0, actx.currentTime, .05);
+      var b = bus; bus = null;
+      setTimeout(function () { try { b.disconnect(); } catch (e) {} }, 300);
+    }
+
+    // 一記小鼓／鈸：濾波後的雜訊加上快速衰減
+    function hit(t, vol, dur, freq, type) {
+      if (!bus) return;
+      var src = actx.createBufferSource();
+      src.buffer = noiseBuf;
+      var f = actx.createBiquadFilter();
+      f.type = type || 'bandpass'; f.frequency.value = freq || 1800; f.Q.value = .8;
+      var g = actx.createGain();
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(.001, t + dur);
+      src.connect(f); f.connect(g); g.connect(bus);
+      src.start(t, Math.random() * 1.5, dur + .05);
+    }
+    // 鼓聲漸強，最後一聲鈸
+    function drumRoll(sec, crash) {
+      if (!soundReady()) return;
+      var t0 = actx.currentTime + .05;
+      for (var t = 0; t < sec; t += .055) {
+        var p = t / sec;
+        hit(t0 + t + Math.random() * .008, .08 + p * .5, .09, 1500 + p * 900);
+      }
+      if (crash !== false) {
+        hit(t0 + sec, 1, 1.8, 5000, 'highpass');
+        hit(t0 + sec, .7, .25, 180, 'lowpass');
+      }
+    }
+    // 銅管：兩個略為走音的鋸齒波加低通濾波
+    function brass(freqs, t, dur, vol) {
+      if (!bus) return;
+      freqs.forEach(function (fq) {
+        [-4, 4].forEach(function (cents) {
+          var o = actx.createOscillator();
+          o.type = 'sawtooth'; o.frequency.value = fq; o.detune.value = cents;
+          var f = actx.createBiquadFilter();
+          f.type = 'lowpass'; f.Q.value = 1;
+          f.frequency.setValueAtTime(600, t);
+          f.frequency.linearRampToValueAtTime(fq * 4, t + .08);
+          f.frequency.linearRampToValueAtTime(fq * 2.5, t + dur);
+          var g = actx.createGain();
+          g.gain.setValueAtTime(0, t);
+          g.gain.linearRampToValueAtTime(vol / freqs.length, t + .04);
+          g.gain.setValueAtTime(vol / freqs.length, t + dur - .08);
+          g.gain.linearRampToValueAtTime(0, t + dur);
+          o.connect(f); f.connect(g); g.connect(bus);
+          o.start(t); o.stop(t + dur + .05);
+        });
+      });
+    }
+    // 第 3、2 名：短號角
+    function sting(high) {
+      if (!soundReady()) return;
+      var t = actx.currentTime + .05, b = high ? 1.26 : 1;
+      brass([392 * b], t, .14, .22);
+      brass([523 * b, 659 * b], t + .16, .5, .28);
+      hit(t + .16, .4, .6, 6000, 'highpass');
+    }
+    // 第 1 名：完整號角
+    function fanfare() {
+      if (!soundReady()) return;
+      var t = actx.currentTime + .05;
+      var C = 523.25, E = 659.25, G = 783.99, C6 = 1046.5;
+      brass([C], t, .13, .25); brass([C], t + .15, .13, .25); brass([C], t + .3, .13, .25);
+      brass([C, E], t + .45, .38, .3);
+      brass([466.16, E], t + .85, .18, .28);   // 降 B
+      brass([C, G], t + 1.05, .25, .3);
+      brass([C, E, G, C6], t + 1.33, 1.6, .38);
+      hit(t + 1.33, 1, 2.2, 5500, 'highpass');
+      hit(t + 1.33, .8, .3, 160, 'lowpass');
+    }
+
+    /* ---------- 開票頒獎典禮 ---------- */
+    var CAT_LABEL = { surprise: '最驚喜的禮物', funny: '最搞笑的禮物', want: '最想收到的禮物' };
+    var CAT_EMOJI = { surprise: '🎁', funny: '😂', want: '💝' };
+    var awardEl = null, awardTimers = [], awardConfetti = null;
+
+    function at(ms, fn) { awardTimers.push(setTimeout(fn, ms)); }
+
+    function awardCard(w) {
+      var words = w.words.map(function (x, i) {
+        return i === w.fakeIndex ? '<s>' + escapeHtml(x) + '</s>' : escapeHtml(x);
+      }).join('・');
+      return '<div class="award-card">' +
+        '<div class="nm">' + escapeHtml(w.name) + '</div>' +
+        '<div class="id">禮物 #' + w.id + '</div>' +
+        '<div class="ws">' + words + '</div>' +
+        '<span class="votes"><b data-n="' + w.votes + '">0</b> 票</span></div>';
+    }
+
+    function countUp(el) {
+      var n = Number(el.dataset.n), t0 = performance.now(), D = 900;
+      (function f(now) {
+        var p = Math.min(1, (now - t0) / D);
+        el.textContent = Math.round(n * (1 - Math.pow(1 - p, 3)));
+        if (p < 1 && awardEl) requestAnimationFrame(f);
+      })(t0);
+    }
+
+    function revealStep(r) {
+      if (!awardEl) return;
+      awardEl.querySelector('.step.r' + r).classList.add('shown');
+      awardEl.querySelectorAll('.step.r' + r + ' .award-card').forEach(function (c, i) {
+        setTimeout(function () {
+          c.classList.add('show');
+          var b = c.querySelector('.votes b');
+          setTimeout(function () { countUp(b); }, 500);
+        }, i * 250);
+      });
+    }
+
+    function showAward(cat, ranking) {
+      closeAward();
+      closeReveal();
+      hideSpot();
+      revealOpen = true;
+      if (soundReady()) newBus();
+
+      var groups = { 1: [], 2: [], 3: [] };
+      ranking.forEach(function (w) { if (groups[w.rank]) groups[w.rank].push(w); });
+      var steps = [1, 2, 3].map(function (r) {
+        var list = groups[r];
+        return '<div class="step r' + r + (list.length >= 3 ? ' many' : '') + '">' +
+          (list.length > 1 ? '<div class="tie-tag">並列第 ' + r + ' 名</div>' : '') +
+          '<div class="winners">' + list.map(awardCard).join('') + '</div>' +
+          '<div class="block">' + r + '</div></div>';
+      }).join('');
+
+      awardEl = document.createElement('div');
+      awardEl.className = 'award-overlay intro';
+      awardEl.innerHTML =
+        '<div class="beam l"></div><div class="beam r"></div><canvas></canvas>' +
+        '<div class="award-title gold-text"><small>開票</small><span class="emoji">' + CAT_EMOJI[cat] + '</span> ' + CAT_LABEL[cat] + '</div>' +
+        (ranking.length ? '<div class="podium">' + steps + '</div>' : '<div class="award-empty">這個獎項還沒有人投票</div>') +
+        '<div class="award-hint">點一下關閉</div>';
+      document.body.appendChild(awardEl);
+      awardEl.addEventListener('click', closeAward);
+
+      drumRoll(2.8);
+      var t = 3000;
+      at(t, function () { awardEl.classList.remove('intro'); });
+      if (!ranking.length) { at(t + 1200, function () { awardEl.classList.add('done'); }); return; }
+
+      t += 400;
+      at(t, function () { awardEl.querySelector('.podium').classList.add('up'); });
+      t += 1500;
+      if (groups[3].length) {
+        at(t, function () { revealStep(3); sting(false); });
+        t += 2600;
+      }
+      if (groups[2].length) {
+        at(t, function () { revealStep(2); sting(true); });
+        t += 2600;
+      }
+      // 第一名前的懸念
+      at(t, function () {
+        var d = document.createElement('div');
+        d.className = 'drumroll-text';
+        d.textContent = groups[1].length > 1 ? '並列第一名是…' : '第一名是…';
+        awardEl.appendChild(d);
+        drumRoll(3.4);
+      });
+      t += 3600;
+      at(t, function () {
+        var d = awardEl.querySelector('.drumroll-text');
+        if (d) d.remove();
+        awardEl.classList.add('final');
+        revealStep(1);
+        fanfare();
+      });
+      at(t + 900, function () { awardConfetti = confetti(awardEl.querySelector('canvas')); });
+      at(t + 2500, function () { awardEl.classList.add('done'); });
+    }
+
+    function closeAward() {
+      awardTimers.forEach(clearTimeout);
+      awardTimers = [];
+      if (awardConfetti) { awardConfetti(); awardConfetti = null; }
+      muteBus();
+      if (awardEl) { awardEl.remove(); awardEl = null; revealOpen = false; }
+    }
+
     /* ---------- 輪詢 ---------- */
     async function poll() {
       try {
@@ -779,11 +1027,15 @@
         var st = data.state || {};
         var revealAt = Number(st.revealAt) || 0;
         var resetAt = Number(st.resetAt) || 0;
+        var resultAt = Number(st.resultAt) || 0;
+        var vOpen = !!(data.voting && data.voting.open);
+        if (vOpen !== votingOpen) { votingOpen = vOpen; drawQr(); }
         // 只有 resetAt 變大才算重置（舊版後端公佈時會把 resetAt 洗掉，不能誤判成重置）
         if (resetAt > lastResetAt) { if (!firstLoad) seen.clear(); lastResetAt = resetAt; }
         if (firstLoad) {
           // 第一次載入不重播舊的公佈
           lastRevealAt = revealAt;
+          lastResultAt = resultAt;
           gifts.forEach(function (g) { seen.add(g.id); });
           firstLoad = false;
           render(true);
@@ -795,6 +1047,11 @@
             lastRevealAt = revealAt;
             var g = gifts.find(function (x) { return x.id === st.revealId; });
             if (g && g.revealed) showReveal(g);
+          }
+          if (resultAt > lastResultAt) {
+            lastResultAt = resultAt;
+            var cat = st.resultCat;
+            if (cat && st.results && st.results[cat]) showAward(cat, st.results[cat]);
           }
         }
         statusEl.textContent = '● 已連線 ' + new Date().toLocaleTimeString();

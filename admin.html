@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Serif+TC:wght@700;900&display=swap">
-  <link rel="stylesheet" href="assets/style.css?v=19">
+  <link rel="stylesheet" href="assets/style.css?v=20">
 </head>
 <body>
   <main class="admin">
@@ -49,6 +49,26 @@
           <b id="speedVal">3</b>
         </div>
         <p class="setting-msg" id="settingsMsg">修改後大螢幕約 3 秒內會跟著切換。</p>
+      </section>
+
+      <section class="panel settings" id="votePanel">
+        <h2>🗳️ 投票</h2>
+        <div class="setting-row">
+          <span class="vote-status" id="voteStatus">未開始</span>
+          <span class="meta" id="voterCount" style="color:var(--muted)"></span>
+          <span style="flex:1"></span>
+          <button class="small ghost" style="color:#5a4532" onclick="window.open('vote.html', '_blank')">開啟投票頁 ↗</button>
+          <button class="small gold" id="voteToggle">開始投票</button>
+        </div>
+        <div class="tally-grid" id="tallies"></div>
+        <details class="voters" id="votersBox">
+          <summary>投票名單</summary>
+          <div id="voters"></div>
+        </details>
+        <div class="setting-row" style="margin-top:10px;margin-bottom:0">
+          <p class="setting-msg" id="voteMsg" style="flex:1">開始投票後，大螢幕右下角的 QR code 會換成投票頁。</p>
+          <button class="small ghost" style="color:var(--berry)" id="clearVotesBtn">清空投票</button>
+        </div>
       </section>
 
       <p class="error" id="err"></p>
@@ -120,6 +140,7 @@
         var data = await API.post({ action: 'adminList', password: password });
         render(data.gifts || []);
         showSettings(data.state || {});
+        showVotes(data.votes, data.state || {});
         $('err').textContent = '';
         $('meta').textContent = '共 ' + data.gifts.length + ' 筆・更新於 ' + new Date().toLocaleTimeString();
       } catch (e) {
@@ -236,8 +257,110 @@
       speedTimer = setTimeout(function () { saveSettings({ speed: v }, '速度已設為 ' + v); }, 400);
     });
 
+    /* ---------- 投票 ---------- */
+    var CATS = [
+      { key: 'surprise', label: '🎁 最驚喜的禮物' },
+      { key: 'funny', label: '😂 最搞笑的禮物' },
+      { key: 'want', label: '💝 最想收到的禮物' }
+    ];
+    var votingOpen = false;
+    var voteBusy = false;
+    var lastVoteSig = '';
+
+    function showVotes(votes, st) {
+      if (voteBusy) return;
+      if (!votes) {
+        $('voteMsg').className = 'setting-msg error';
+        $('voteMsg').textContent = '後端還是舊版：請把 apps-script/Code.gs 貼到 Apps Script 並「部署 → 管理部署作業 → 新版本」。';
+        return;
+      }
+      votingOpen = !!st.votingOpen;
+      var results = st.results || {};
+      var sig = JSON.stringify([votes, votingOpen, Object.keys(results)]);
+      if (sig === lastVoteSig) return;
+      lastVoteSig = sig;
+
+      var everVoted = votes.voterCount > 0 || Object.keys(results).length > 0;
+      $('voteStatus').textContent = votingOpen ? '投票中' : (everVoted ? '已結束' : '未開始');
+      $('voteStatus').className = 'vote-status' + (votingOpen ? ' open' : '');
+      $('voterCount').textContent = '已有 ' + votes.voterCount + ' 人投票';
+      $('voteToggle').textContent = votingOpen ? '結束投票' : (everVoted ? '重新開放投票' : '開始投票');
+      $('voteToggle').className = 'small ' + (votingOpen ? '' : 'gold');
+
+      $('tallies').innerHTML = CATS.map(function (c) {
+        var list = votes.tallies[c.key] || [];
+        var max = list.length ? list[0].votes : 1;
+        var rows = list.slice(0, 10).map(function (t) {
+          return '<li><div class="lbl"><span>#' + t.id + ' ' + escapeHtml(t.name) + '</span><b>' + t.votes + ' 票</b></div>' +
+            '<div class="bar"><i style="width:' + (t.votes / max * 100) + '%"></i></div></li>';
+        }).join('');
+        var done = !!results[c.key];
+        return '<div class="tally"><h3>' + c.label + '</h3>' +
+          (rows ? '<ol>' + rows + '</ol>' : '<p class="none">還沒有票</p>') +
+          '<button class="small ' + (done ? 'ghost' : 'gold') + '"' + (done ? ' style="color:#5a4532"' : '') +
+          ' data-cat="' + c.key + '">' + (done ? '🔁 重新開票' : '🏆 開票') + '</button></div>';
+      }).join('');
+
+      var giftName = {};
+      CATS.forEach(function (c) { (votes.tallies[c.key] || []).forEach(function (t) { giftName[t.id] = t.name; }); });
+      var fmt = function (ids) { return ids.map(function (id) { return '#' + id + (giftName[id] ? ' ' + escapeHtml(giftName[id]) : ''); }).join('、'); };
+      $('voters').innerHTML = votes.voters.length
+        ? '<table><thead><tr><th>投票者</th><th>最驚喜</th><th>最搞笑</th><th>最想收到</th></tr></thead><tbody>' +
+          votes.voters.map(function (v) {
+            return '<tr><td><b>' + escapeHtml(v.name) + '</b></td><td>' + fmt(v.surprise) + '</td><td>' + fmt(v.funny) + '</td><td>' + fmt(v.want) + '</td></tr>';
+          }).join('') + '</tbody></table>'
+        : '<p style="color:var(--muted)">還沒有人投票</p>';
+      $('votersBox').querySelector('summary').textContent = '投票名單（' + votes.voters.length + ' 人）';
+    }
+
+    async function voteAct(payload, okMsg) {
+      voteBusy = true;
+      $('voteMsg').className = 'setting-msg';
+      $('voteMsg').textContent = '處理中…';
+      try {
+        await API.post(Object.assign({ password: password }, payload));
+        $('voteMsg').textContent = okMsg;
+        toast(okMsg);
+      } catch (e) {
+        $('voteMsg').className = 'setting-msg error';
+        $('voteMsg').textContent = e.message === '未知的動作'
+          ? '後端還是舊版：請把 apps-script/Code.gs 貼到 Apps Script 並「部署 → 管理部署作業 → 新版本」。'
+          : e.message;
+      } finally {
+        voteBusy = false;
+        lastVoteSig = '';
+        load();
+      }
+    }
+
+    $('voteToggle').addEventListener('click', function () {
+      if (votingOpen && !confirm('確定要結束投票嗎？結束後大家就不能再投或改票。')) return;
+      this.disabled = true;
+      var btn = this;
+      voteAct({ action: 'setVoting', open: !votingOpen }, votingOpen ? '投票已結束' : '投票開始！大螢幕 QR code 已換成投票頁')
+        .then(function () { btn.disabled = false; });
+    });
+
+    $('tallies').addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-cat]');
+      if (!b) return;
+      var c = CATS.find(function (x) { return x.key === b.dataset.cat; });
+      var msg = votingOpen
+        ? '開票會先結束投票（大家不能再改票），確定要開「' + c.label + '」嗎？'
+        : '確定要在大螢幕開「' + c.label + '」的票嗎？';
+      if (!confirm(msg)) return;
+      b.disabled = true;
+      voteAct({ action: 'revealResult', cat: c.key }, '已開票：' + c.label + '，請看大螢幕！');
+    });
+
+    $('clearVotesBtn').addEventListener('click', function () {
+      var ans = prompt('這會刪除所有投票與開票結果，無法復原！\n請輸入 CLEAR 確認：');
+      if (ans !== 'CLEAR') return;
+      voteAct({ action: 'clearVotes' }, '已清空投票');
+    });
+
     $('resetBtn').addEventListener('click', function () {
-      var ans = prompt('這會刪除所有人的資料，無法復原！\n請輸入 RESET 確認：');
+      var ans = prompt('這會刪除所有人的禮物資料與投票，無法復原！\n請輸入 RESET 確認：');
       if (ans !== 'RESET') return;
       act({ action: 'reset' }, '已全部重置');
     });
