@@ -169,7 +169,7 @@
           '<td>' + words + '</td>' +
           '<td>' + (g.revealed ? '<span class="tag">已公佈</span>' : '') + '</td>' +
           '<td class="actions">' +
-            '<button class="small gold" data-act="reveal" data-id="' + g.id + '">' + (g.revealed ? '再公佈一次' : '公佈') + '</button>' +
+            '<button class="small gold" data-act="reveal" data-id="' + g.id + '" data-name="' + escapeHtml(g.name) + '" data-again="' + (g.revealed ? '1' : '') + '">' + (g.revealed ? '再公佈一次' : '公佈') + '</button>' +
             '<button class="small" data-act="delete" data-id="' + g.id + '" data-name="' + escapeHtml(g.name) + '">刪除</button>' +
           '</td></tr>';
       }).join('');
@@ -196,6 +196,10 @@
       if (!b) return;
       var id = Number(b.dataset.id);
       if (b.dataset.act === 'reveal') {
+        var q = b.dataset.again
+          ? '#' + id + '（' + b.dataset.name + '）已經公佈過了，要在大螢幕上再播一次嗎？'
+          : '確定要公佈 #' + id + '（' + b.dataset.name + '）的禮物嗎？\n大螢幕會揭曉送禮者和假的特徵。';
+        if (!confirm(q)) return;
         b.disabled = true;
         act({ action: 'reveal', id: id }, '已公佈禮物 #' + id + '，請看大螢幕！');
       } else if (b.dataset.act === 'delete') {
